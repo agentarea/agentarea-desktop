@@ -432,7 +432,9 @@ function AppPane({ leaf, app, full }: { leaf: Leaf; app: AppRef; full?: boolean 
     (s) => app.kind === 'local' && !s.listError && s.servers.length > 0 && !s.servers.some((x) => x.id === app.serverId),
   );
   if (missing) return <Dangling leaf={leaf} text="App no longer installed" />;
-  if (full) return <AppView key={app.key} app={app} />;
+  // Views the app opens through app links go in the pane to its right.
+  const openLinked = (linked: AppRef) => usePanes.getState().openLinked(leaf.key, linked);
+  if (full) return <AppView key={app.key} app={app} onOpenLinked={openLinked} />;
   return (
     <>
       <PaneHeader leaf={leaf} title={app.title}>
@@ -441,7 +443,7 @@ function AppPane({ leaf, app, full }: { leaf: Leaf; app: AppRef; full?: boolean 
           {app.kind === 'local' ? 'Local' : 'Cloud'}
         </span>
       </PaneHeader>
-      <AppView key={app.key} app={app} chrome={false} />
+      <AppView key={app.key} app={app} chrome={false} onOpenLinked={openLinked} />
     </>
   );
 }

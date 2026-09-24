@@ -14,6 +14,7 @@ import {
   type McpUiResourcePermissions,
 } from '@modelcontextprotocol/ext-apps/app-bridge';
 import type { McpAppResource } from '@/lib/api';
+import { parseAppLink, type AppLink } from '@/lib/appLinks';
 import type { CallAppTool } from '@/lib/mcp-apps/tool-result';
 import { MCP_UI_STYLE_TOKEN_NAMES, mcpUiStyleVariablesFromTokens } from '@/lib/mcp-apps/styles';
 import { originOf, sandboxUrl } from '@/lib/schemes';
@@ -36,6 +37,11 @@ export interface McpAppFrameProps {
   resource: McpAppResource;
   /** arguments for the entry tool call; must be referentially stable */
   entryToolArguments?: Record<string, unknown>;
+  /**
+   * opens another view of this connection (`agentarea-app://tool?…`); a throw
+   * declines the link. Without it app links are declined.
+   */
+  onOpenAppLink?: (link: AppLink) => Promise<void>;
 }
 
 type FailureKind = 'configuration' | 'resource' | 'tool';
@@ -91,11 +97,20 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function McpAppFrame({ callTool, toolName, title, resource, entryToolArguments = NO_ARGUMENTS }: McpAppFrameProps) {
+export function McpAppFrame({
+  callTool,
+  toolName,
+  title,
+  resource,
+  entryToolArguments = NO_ARGUMENTS,
+  onOpenAppLink,
+}: McpAppFrameProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   // Read at call time so a new caller doesn't restart a running app.
   const callToolRef = useRef(callTool);
   callToolRef.current = callTool;
+  const onOpenAppLinkRef = useRef(onOpenAppLink);
+  onOpenAppLinkRef.current = onOpenAppLink;
   const bridgeRef = useRef<AppBridge | null>(null);
   const [status, setStatus] = useState<'loading' | 'running' | 'error'>('loading');
   const [failure, setFailure] = useState<{ kind: FailureKind; message: string } | null>(null);
@@ -185,8 +200,21 @@ export function McpAppFrame({ callTool, toolName, title, resource, entryToolArgu
       bridge.onsizechange = ({ height }) => {
         if (height !== undefined) iframe.style.height = `${Math.max(height, 0)}px`;
       };
-      // Links open in the system browser, never inside the webview.
+      // An app link opens another view of this connection (the host decides
+      // where); other links open in the system browser, never in the webview.
       bridge.onopenlink = async ({ url }) => {
+        const appLink = parseAppLink(url);
+        if (appLink) {
+          const open = onOpenAppLinkRef.current;
+          if (!open) return { isError: true };
+          try {
+            await open(appLink);
+            return {};
+          } catch (linkError) {
+            console.warn('MCP App link declined', url, errorMessage(linkError));
+            return { isError: true };
+          }
+        }
         try {
           const target = new URL(url);
           if (target.protocol !== 'http:' && target.protocol !== 'https:') return { isError: true };

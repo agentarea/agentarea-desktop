@@ -9,6 +9,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { create } from 'zustand';
 import type { McpAppResource } from '@/lib/api';
+import { uiResourceUri, visibility } from '@/lib/appLinks';
 import { toCallToolResult, type CallAppTool } from '@/lib/mcp-apps/tool-result';
 
 export type LocalSource = 'recommended' | 'registry' | 'custom';
@@ -41,7 +42,7 @@ export interface LocalTool {
   name: string;
   title?: string;
   description?: string;
-  inputSchema?: { required?: string[] };
+  inputSchema?: { properties?: Record<string, unknown>; required?: string[] };
   _meta?: Record<string, unknown>;
 }
 
@@ -72,7 +73,7 @@ export function localRequest<T = unknown>(id: string, method: string, params?: u
 }
 
 /** Every tool, following `nextCursor` (bounded, in case a server loops). */
-async function listTools(id: string): Promise<LocalTool[]> {
+export async function listTools(id: string): Promise<LocalTool[]> {
   const tools: LocalTool[] = [];
   let cursor: string | undefined;
   for (let page = 0; page < 20; page++) {
@@ -82,18 +83,6 @@ async function listTools(id: string): Promise<LocalTool[]> {
     if (!cursor) break;
   }
   return tools;
-}
-
-/** `_meta.ui.resourceUri`, or the older flat `_meta["ui/resourceUri"]`. */
-function uiResourceUri(tool: LocalTool): string | null {
-  const uri = record(record(tool._meta)?.ui)?.resourceUri ?? record(tool._meta)?.['ui/resourceUri'];
-  return typeof uri === 'string' && uri.startsWith('ui://') ? uri : null;
-}
-
-/** Who may call a tool; MCP Apps default to both the model and the app. */
-function visibility(tool: LocalTool): string[] {
-  const v = record(record(tool._meta)?.ui)?.visibility;
-  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : ['model', 'app'];
 }
 
 /** A server's apps: UI tools the model may open (app-only helpers are not entries). */

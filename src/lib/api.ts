@@ -226,6 +226,18 @@ export async function readMcpAppResource(instanceId: string, uri: string): Promi
   return apiJson(`/v1/mcp-apps/${encodeURIComponent(instanceId)}/resource?${q}`);
 }
 
+/**
+ * GET /v1/mcp-server-instances/{id} — the tools the connection advertised when
+ * verified (the web app reads the same list), with input schemas and `_meta.ui`.
+ */
+export async function listMcpInstanceTools(instanceId: string): Promise<unknown[]> {
+  const inst = await apiJson<{ tools?: unknown[]; json_spec?: { available_tools?: unknown } }>(
+    `/v1/mcp-server-instances/${encodeURIComponent(instanceId)}`,
+  );
+  const raw = inst.tools?.length ? inst.tools : inst.json_spec?.available_tools;
+  return Array.isArray(raw) ? raw : [];
+}
+
 /** POST /v1/mcp-apps/{instance_id}/tools/call */
 export async function callMcpAppTool(instanceId: string, call: McpAppToolCall): Promise<McpAppToolCallResult> {
   return apiJson(`/v1/mcp-apps/${encodeURIComponent(instanceId)}/tools/call`, {

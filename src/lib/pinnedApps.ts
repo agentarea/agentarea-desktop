@@ -21,6 +21,8 @@ export interface AppRef {
   serverId?: string;
   /** cloud apps */
   instanceId?: string;
+  /** entry tool arguments: a view another app opened through an app link */
+  args?: Record<string, unknown>;
 }
 
 const KEY = 'aa.pinnedApps';

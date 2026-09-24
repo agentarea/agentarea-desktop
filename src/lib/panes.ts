@@ -201,6 +201,10 @@ interface PanesState {
   setDrag: (drag: Drag | null) => void;
   setResizing: (dir: 'row' | 'col' | null) => void;
   drop: (item: PaneContent, target: DropTarget) => void;
+  /** per app pane, the pane its app links opened (a new link replaces that pane's view) */
+  linked: Record<string, string>;
+  /** an app in pane `source` opened another view: show it in the pane to its right */
+  openLinked: (source: string, app: AppRef) => void;
 }
 
 const first = leaf(null);
@@ -217,6 +221,7 @@ export const usePanes = create<PanesState>((set, get) => {
     maximized: null,
     drag: null,
     resizing: null,
+    linked: {},
 
     focus: (key) => {
       const l = leaves(get().tree).find((x) => x.key === key);
@@ -331,6 +336,32 @@ export const usePanes = create<PanesState>((set, get) => {
       const add: Leaf = from ? { ...from } : leaf(item);
       const rest = from ? removeLeaf(tree, from.key)! : tree;
       relayout(insertAt(rest, target.key, zone, add), add.key);
+    },
+
+    openLinked: (source, app) => {
+      const { tree, linked } = get();
+      const list = leaves(tree);
+      if (!list.some((l) => l.key === source)) return;
+      const item: PaneContent = { kind: 'app', app };
+      // Already on screen: never open the same view twice.
+      const open = list.find((l) => contentId(l.content) === contentId(item));
+      if (open) return get().focus(open.key);
+      // The pane this source opened before (unless something else was put
+      // there since); at the pane cap, the rightmost other one.
+      const reuse =
+        list.find((l) => l.key === linked[source] && l.key !== source && l.content?.kind === 'app') ??
+        (list.length >= MAX_PANES ? list.filter((l) => l.key !== source).pop() : undefined);
+      if (reuse) {
+        set({
+          tree: mapLeaves(tree, (l) => (l.key === reuse.key ? { ...l, content: item } : l)),
+          linked: { ...linked, [source]: reuse.key },
+          maximized: null,
+        });
+        return get().focus(reuse.key);
+      }
+      const add = leaf(item);
+      set({ linked: { ...linked, [source]: add.key } });
+      relayout(insertAt(tree, source, 'right', add), add.key);
     },
   };
 });
