@@ -430,7 +430,9 @@ function Sidebar({
 
       <div className="mt-4 px-4 pb-1.5 text-[11px] font-medium text-muted-foreground-subtle">Threads</div>
 
-      <ScrollArea className="min-h-0 flex-1 px-2.5">
+      {/* Radix wraps content in a display:table div that grows with the longest
+          title; make it a block so titles truncate and row badges stay visible. */}
+      <ScrollArea className="min-h-0 flex-1 px-2.5" viewportClassName="[&>div]:!block">
         <div className="flex flex-col gap-px pb-2">
           {sessions.map((s) => (
             <div
