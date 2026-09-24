@@ -1,12 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Moon, Sun, LogOut, X, SquarePen, AppWindow, Puzzle, Inbox, KeyRound, ChevronDown, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { LoginScreen } from '@/components/LoginScreen';
-import { Composer } from '@/components/Composer';
-import { AgentGrid } from '@/components/AgentGrid';
+import { DragLayer, SplitView, startThreadDrag } from '@/components/SplitView';
 import { AppsPanel, PluginsPanel } from '@/components/AppsPanel';
 import { InboxView } from '@/components/InboxView';
 import { AppView } from '@/components/AppView';
@@ -16,12 +15,10 @@ import { SecretsView } from '@/components/SecretsView';
 import { localInbox } from '@/lib/inbox';
 import { PluginFrame } from '@/components/PluginFrame';
 import { usePlugins } from '@/lib/plugins';
-import { useDragDropTarget, DropOverlay } from '@/components/DropZone';
-import { ThreadFolder } from '@/components/FileChip';
-import { ApprovalCard, DraftRow, groupMessages, MessageRow, ToolGroup } from '@/components/MessageView';
+import { useDragDropTarget } from '@/components/DropZone';
 import { RunnerBadge, RUNNER_LABEL } from '@/assets/icons';
+import { leaves, usePanes } from '@/lib/panes';
 import { useAppStore } from '@/store';
-import type { Session } from './data';
 
 export default function App() {
   const theme = useAppStore((s) => s.settings.theme);
@@ -34,13 +31,11 @@ export default function App() {
   );
 }
 
-/* ── View: threads (in 1–4 panes), a panel, or a plugin's own page ───── */
+/* ── View: threads (one, or up to four split), a panel, or a plugin's own page ───── */
 
 /** 'plugin-page': a page a plugin opened (ui.open), full-width; not persisted. */
 type ViewMode = 'threads' | 'inbox' | 'apps' | 'plugins' | 'secrets' | 'plugin-page' | 'app-page';
-type Panes = 1 | 2 | 3 | 4;
 const VIEW_KEY = 'aa.view';
-const PANES_KEY = 'aa.panes';
 
 function load<T>(key: string, valid: readonly T[], fallback: T): T {
   try {
@@ -72,48 +67,42 @@ function Workspace() {
   const select = useAppStore((s) => s.select);
   const newSession = useAppStore((s) => s.newSession);
   const [view, setView] = usePersisted<ViewMode>(VIEW_KEY, ['threads', 'inbox', 'apps', 'plugins', 'secrets'], 'threads');
-  const [panes, setPanes] = usePersisted<Panes>(PANES_KEY, [1, 2, 3, 4], 1);
-  // Panes are numbered slots (like tmux). A slot keeps its thread until you
-  // put another one there; empty slots fill with threads not on screen.
-  const [slots, setSlots] = useState<string[]>([]);
-  const [activeSlot, setActiveSlot] = useState(0);
-  // Pane count to return to after enlarging one thread (⌘↵ / Esc).
-  const [zoomedFrom, setZoomedFrom] = useState<Panes | null>(null);
-  const grid = view === 'threads' && panes > 1;
-  const overId = useDragDropTarget(selected?.id ?? null, grid);
+  const tree = usePanes((s) => s.tree);
+  const maximized = usePanes((s) => s.maximized);
+  const paneList = leaves(tree);
+  const split = view === 'threads' && paneList.length > 1 && !maximized;
+  const openIds = useMemo(
+    () => new Set(leaves(tree).flatMap((l) => (l.sessionId ? [l.sessionId] : []))),
+    [tree],
+  );
+  const overId = useDragDropTarget(selected?.id ?? null);
 
-  const visible: Session[] = [];
-  {
-    const pinned = new Set(slots.slice(0, panes));
-    const spare = sessions.filter((s) => !pinned.has(s.id));
-    for (let i = 0; i < panes; i++) {
-      const s = sessions.find((x) => x.id === slots[i]) ?? spare.shift();
-      if (s) visible.push(s);
-    }
-  }
-  const slotOf = grid ? Object.fromEntries(visible.map((s, i) => [s.id, i + 1])) : {};
-  const active = Math.min(activeSlot, Math.max(visible.length - 1, 0));
-
-  // Whatever gets selected (sidebar click, new thread, plugin) and is not on
-  // screen lands in the active slot; if it is on screen, its slot becomes active.
+  // Whatever gets selected (sidebar click, new thread, inbox, plugin) lands in
+  // the focused pane, or focuses the pane already showing it.
   useEffect(() => {
-    if (!grid || !selected) return;
-    const i = visible.findIndex((s) => s.id === selected.id);
-    if (i >= 0) return setActiveSlot(i);
-    setSlots(() => {
-      const next = visible.map((s) => s.id);
-      next[active] = selected.id;
-      return next;
-    });
-  }, [selected?.id, grid]);
+    if (selected) usePanes.getState().show(selected.id);
+  }, [selected?.id]);
 
-  // One pane opens straight into a thread; several panes are fine with none.
+  // Deleted threads (and another workspace's) leave their panes.
   useEffect(() => {
-    if (view === 'threads' && panes === 1 && !selected) void newSession();
-  }, [view, panes, selected, newSession]);
+    usePanes.getState().prune(new Set(sessions.map((s) => s.id)));
+  }, [sessions]);
+
+  /** threads open in panes other than the focused one */
+  const otherPaneIds = () => {
+    const { tree, focusedKey } = usePanes.getState();
+    return leaves(tree).flatMap((l) => (l.key !== focusedKey && l.sessionId ? [l.sessionId] : []));
+  };
+
+  // The focused pane always shows a thread. Read live: closing a deleted
+  // thread's pane (above) may already have selected its neighbour.
+  useEffect(() => {
+    if (view === 'threads' && !useAppStore.getState().selectedId) void newSession(otherPaneIds());
+  }, [view, selected, newSession]);
 
   const openThread = (id: string) => {
     select(id);
+    usePanes.getState().show(id);
     setView('threads');
   };
 
@@ -131,16 +120,6 @@ function Workspace() {
     const t = setInterval(() => void loadInbox(), 30_000);
     return () => clearInterval(t);
   }, [connected, loadInbox]);
-  const zoomIn = (id: string | null) => {
-    if (id) select(id);
-    if (panes > 1) setZoomedFrom(panes);
-    setPanes(1);
-    setView('threads');
-  };
-  const zoomOut = () => {
-    if (zoomedFrom) setPanes(zoomedFrom);
-    setZoomedFrom(null);
-  };
 
   // A pinned app clicked in the sidebar: show it full-width.
   const openedApp = usePinnedApps((s) => s.opened);
@@ -161,49 +140,62 @@ function Workspace() {
     void usePlugins.getState().reload();
   }, []);
 
-  useHotkeys({
-    // ⌘T: a new thread in a new pane while there is room, otherwise in the
-    // active one — like a new browser tab — with its input focused.
-    newThread: () => {
-      if (grid && panes < 4) {
-        setActiveSlot(panes);
-        setPanes((panes + 1) as Panes);
-      }
-      newThread();
-      setTimeout(() => {
-        const id = useAppStore.getState().selectedId;
-        const el = document.querySelector<HTMLTextAreaElement>(
-          id ? `[data-session-id="${id}"] textarea, main textarea` : 'main textarea',
-        );
-        el?.focus();
-      }, 50);
-    },
-    panes: (n) => {
-      setZoomedFrom(null);
-      setPanes(n);
-      setView('threads');
-    },
-    toggleZoom: () => (panes === 1 && zoomedFrom ? zoomOut() : zoomIn(selected?.id ?? null)),
-    escape: () => panes === 1 && zoomedFrom && zoomOut(),
-    step: (dir) => {
-      // In panes, move between slots; in one pane, go through all threads.
-      const list = grid ? visible : sessions;
-      if (!list.length) return;
-      const i = list.findIndex((s) => s.id === selected?.id);
-      const next = list[(i + dir + list.length) % list.length];
-      if (grid) select(next.id);
-      else openThread(next.id);
-    },
-  });
+  // Focus the composer of the thread just opened.
+  const focusComposer = () =>
+    setTimeout(() => {
+      const id = useAppStore.getState().selectedId;
+      // One selector list would match whichever textarea comes first on the page.
+      const el =
+        (id && document.querySelector<HTMLTextAreaElement>(`[data-session-id="${id}"] textarea`)) ||
+        document.querySelector<HTMLTextAreaElement>('main textarea');
+      el?.focus();
+    }, 50);
   const newThread = () => {
-    void newSession();
+    void newSession(otherPaneIds());
     setView('threads');
   };
+
+  useHotkeys({
+    // ⌘T: a new thread in the focused pane.
+    newThread: () => {
+      newThread();
+      focusComposer();
+    },
+    // ⌘\: a new thread beside the focused one, while there is room.
+    splitRight: () => {
+      const p = usePanes.getState();
+      if (view !== 'threads' || !p.split(p.focusedKey, 'right')) return;
+      void newSession(leaves(p.tree).flatMap((l) => (l.sessionId ? [l.sessionId] : [])));
+      focusComposer();
+    },
+    closePane: () => view === 'threads' && usePanes.getState().close(usePanes.getState().focusedKey),
+    focusPane: (n) => {
+      const l = leaves(usePanes.getState().tree)[n - 1];
+      if (!l) return;
+      usePanes.getState().focus(l.key);
+      setView('threads');
+    },
+    toggleMaximize: () => {
+      if (view === 'threads') usePanes.getState().toggleMaximize();
+    },
+    escape: () => maximized && usePanes.getState().toggleMaximize(),
+    step: (dir) => {
+      // Split: move focus between panes. One pane: go through all threads.
+      if (split) {
+        const { focusedKey, focus } = usePanes.getState();
+        const i = paneList.findIndex((l) => l.key === focusedKey);
+        return focus(paneList[(i + dir + paneList.length) % paneList.length].key);
+      }
+      if (!sessions.length) return;
+      const i = sessions.findIndex((s) => s.id === selected?.id);
+      openThread(sessions[(i + dir + sessions.length) % sessions.length].id);
+    },
+  });
 
   return (
     <div className="flex h-full bg-background text-foreground">
       <WorkspaceRail />
-      <Sidebar view={view} slotOf={slotOf} onChangeView={setView} onOpenThread={openThread} onNewThread={newThread} />
+      <Sidebar view={view} openIds={openIds} onChangeView={setView} onOpenThread={openThread} onNewThread={newThread} />
       <main className="flex min-w-0 flex-1 flex-col bg-background">
         <MainHeader
           title={
@@ -219,30 +211,13 @@ function Workspace() {
                   ? 'Secrets'
                 : view === 'plugin-page'
                   ? targetPlugin?.title
-                  : !grid && view === 'threads' && selected && selected.messages.length > 0
+                  : !split && view === 'threads' && selected && selected.messages.length > 0
                   ? selected.title
                   : undefined
           }
-          panes={view === 'threads' ? panes : null}
-          zoomed={zoomedFrom !== null}
-          onChangePanes={(n) => {
-            setZoomedFrom(null);
-            setPanes(n);
-            setView('threads');
-          }}
+          maximized={view === 'threads' && maximized !== null}
         />
-        {grid && (
-          <AgentGrid
-            sessions={visible}
-            panes={panes as 2 | 3 | 4}
-            activeId={selected?.id ?? null}
-            overId={overId}
-            onActivate={select}
-            onOpenThread={zoomIn}
-            onNewThread={newThread}
-          />
-        )}
-        {view === 'threads' && panes === 1 && selected && <SessionBody session={selected} overId={overId} />}
+        {view === 'threads' && <SplitView overId={overId} />}
         {view === 'inbox' && <InboxView onOpenThread={openThread} />}
         {view === 'app-page' &&
           (shownApp ? (
@@ -262,68 +237,34 @@ function Workspace() {
             <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">This plugin is off or gone.</div>
           ))}
       </main>
+      <DragLayer />
     </div>
   );
 }
 
-function MainHeader({
-  title,
-  panes,
-  zoomed,
-  onChangePanes,
-}: {
-  title?: string;
-  /** one thread enlarged from panes: Esc / ⌘↵ goes back */
-  zoomed: boolean;
-  /** current pane count, or null when a panel (Apps/Plugins) is open */
-  panes: Panes | null;
-  onChangePanes: (n: Panes) => void;
-}) {
+/** a pane enlarged from a split (`maximized`): Esc / ⌘↵ goes back */
+function MainHeader({ title, maximized }: { title?: string; maximized: boolean }) {
   return (
     <div data-tauri-drag-region className="relative flex h-[52px] shrink-0 items-center justify-center px-20">
       {title && <span className="truncate text-[13px] font-medium text-foreground/80">{title}</span>}
-      {zoomed && <span className="ml-2 shrink-0 text-[11px] text-muted-foreground-subtle">Esc to go back</span>}
-      <div className="absolute top-1/2 right-4 -translate-y-1/2" style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}>
-        <TooltipProvider>
-          <div className="flex items-center gap-0.5 rounded-full border border-border bg-secondary/70 p-0.5">
-            {([1, 2, 3, 4] as const).map((n) => (
-              <Tooltip key={n}>
-                <TooltipTrigger asChild>
-                  <button
-                    onClick={() => onChangePanes(n)}
-                    aria-label={`${n} ${n === 1 ? 'pane' : 'panes'}`}
-                    aria-pressed={panes === n}
-                    className={cn(
-                      'flex size-6 items-center justify-center rounded-full transition-colors',
-                      panes === n
-                        ? 'bg-background text-foreground shadow-[0_1px_4px_rgba(0,0,0,0.08)]'
-                        : 'text-muted-foreground hover:text-foreground',
-                    )}
-                  >
-                    <PanesIcon n={n} />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  {n === 1 ? 'One thread' : `${n} threads side by side`} · ⌘{n}
-                </TooltipContent>
-              </Tooltip>
-            ))}
-          </div>
-        </TooltipProvider>
-      </div>
+      {maximized && <span className="ml-2 shrink-0 text-[11px] text-muted-foreground-subtle">Esc to go back</span>}
     </div>
   );
 }
 
 /**
- * Window-level shortcuts: ⌘T new thread, ⌘1–⌘4 pane count, ⌘↵ enlarge/restore the active
- * thread, Esc restore, ⌘[ / ⌘] previous/next thread. Handlers are read from a
- * ref so the listener is registered once.
+ * Window-level shortcuts: ⌘T new thread in the focused pane, ⌘\ split it
+ * with a new thread, ⌘W close the focused pane, ⌘1–⌘4 focus pane N, ⌘[ / ⌘]
+ * previous/next pane, ⌘↵ maximize/restore the focused pane, Esc restore,
+ * ⌃1–⌃9 workspaces. Handlers are read from a ref so the listener is
+ * registered once.
  */
 function useHotkeys(h: {
   newThread: () => void;
-  panes: (n: Panes) => void;
-  toggleZoom: () => void;
+  splitRight: () => void;
+  closePane: () => void;
+  focusPane: (n: number) => void;
+  toggleMaximize: () => void;
   escape: () => void;
   step: (dir: 1 | -1) => void;
 }) {
@@ -342,12 +283,19 @@ function useHotkeys(h: {
       } else if (mod && !e.shiftKey && e.key.toLowerCase() === 't') {
         e.preventDefault();
         ref.current.newThread();
+      } else if (mod && !e.shiftKey && (e.key === '\\' || e.code === 'Backslash')) {
+        e.preventDefault();
+        ref.current.splitRight();
+      } else if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === 'w') {
+        // Always handled, so ⌘W never closes the window from a single pane.
+        e.preventDefault();
+        ref.current.closePane();
       } else if (e.metaKey && ['1', '2', '3', '4'].includes(e.key)) {
         e.preventDefault();
-        ref.current.panes(Number(e.key) as Panes);
+        ref.current.focusPane(Number(e.key));
       } else if (mod && e.key === 'Enter') {
         e.preventDefault();
-        ref.current.toggleZoom();
+        ref.current.toggleMaximize();
       } else if (mod && (e.key === ']' || e.key === '[')) {
         e.preventDefault();
         ref.current.step(e.key === ']' ? 1 : -1);
@@ -359,25 +307,6 @@ function useHotkeys(h: {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
-}
-
-/** A tiny picture of the layout: 1 box, 2 or 3 columns, or a 2×2 grid. */
-function PanesIcon({ n }: { n: Panes }) {
-  const rects =
-    n === 1
-      ? [[1, 1, 12, 12]]
-      : n === 2
-        ? [[1, 1, 5.5, 12], [7.5, 1, 5.5, 12]]
-        : n === 3
-          ? [[1, 1, 3.3, 12], [5.35, 1, 3.3, 12], [9.7, 1, 3.3, 12]]
-          : [[1, 1, 5.5, 5.5], [7.5, 1, 5.5, 5.5], [1, 7.5, 5.5, 5.5], [7.5, 7.5, 5.5, 5.5]];
-  return (
-    <svg viewBox="0 0 14 14" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="1.2">
-      {rects.map(([x, y, w, h], i) => (
-        <rect key={i} x={x} y={y} width={w} height={h} rx="1.2" />
-      ))}
-    </svg>
-  );
 }
 
 /* ── Workspace rail: switch orgs like Slack ─────────── */
@@ -448,14 +377,14 @@ function WorkspaceRail() {
 
 function Sidebar({
   view,
-  slotOf,
+  openIds,
   onChangeView,
   onOpenThread,
   onNewThread,
 }: {
   view: ViewMode;
-  /** thread id → pane number, for threads on screen in a multi-pane layout */
-  slotOf: Record<string, number>;
+  /** threads open in a pane */
+  openIds: Set<string>;
   onChangeView: (v: ViewMode) => void;
   onOpenThread: (id: string) => void;
   onNewThread: () => void;
@@ -507,20 +436,18 @@ function Sidebar({
             <div
               key={s.id}
               onClick={() => onOpenThread(s.id)}
+              // Drag onto the main area to open it in a split.
+              onPointerDown={(e) => startThreadDrag(e, s.id)}
               className={cn(
-                'group flex cursor-default items-center gap-2 rounded-lg px-2.5 py-[7px] transition-colors',
-                inThreads && selectedId === s.id ? 'bg-sidebar-accent' : 'hover:bg-sidebar-hover',
+                'group flex cursor-default items-center gap-2 rounded-lg px-2.5 py-[7px] transition-colors select-none',
+                inThreads && selectedId === s.id
+                  ? 'bg-sidebar-accent'
+                  : inThreads && openIds.has(s.id)
+                    ? 'bg-sidebar-accent/50 hover:bg-sidebar-hover'
+                    : 'hover:bg-sidebar-hover',
               )}
             >
               <RunnerBadge runner={s.runner} className="size-3.5 shrink-0 text-muted-foreground" />
-              {slotOf[s.id] && (
-                <span
-                  title={`In pane ${slotOf[s.id]}`}
-                  className="flex size-4 shrink-0 items-center justify-center rounded bg-foreground/[0.07] text-[10px] font-medium text-foreground/70"
-                >
-                  {slotOf[s.id]}
-                </span>
-              )}
               <span className="min-w-0 flex-1 truncate text-[13px] leading-tight">{s.title}</span>
               {approvals[s.id]?.length ? (
                 <span
@@ -730,62 +657,6 @@ function ConnectionPill() {
       <span className="truncate">
         {envLabel} · {meta.label}
       </span>
-    </div>
-  );
-}
-
-/* ── Thread (Focus) ─────────────────────────────────────── */
-
-const NO_APPROVALS: never[] = [];
-
-function SessionBody({ session, overId }: { session: Session; overId: string | null }) {
-  const running = useAppStore((s) => !!s.running[session.id]);
-  const draft = useAppStore((s) => s.drafts[session.id] ?? '');
-  const approvals = useAppStore((s) => s.approvals[session.id] ?? NO_APPROVALS);
-  const bottom = useRef<HTMLDivElement>(null);
-  const fresh = session.messages.length === 0;
-
-  useEffect(() => {
-    bottom.current?.scrollIntoView({ block: 'end' });
-  }, [session.messages.length, running, draft.length, approvals.length]);
-
-  if (fresh)
-    return (
-      <div className="relative flex flex-1 flex-col items-center justify-center px-6 pb-24">
-        <h1 className="mb-7 text-[26px] font-semibold tracking-tight text-foreground">What should we work on?</h1>
-        <div className="w-full max-w-[600px]">
-          <Composer session={session} autoFocus />
-        </div>
-        {overId === session.id && <DropOverlay />}
-      </div>
-    );
-
-  return (
-    <div className="relative flex min-h-0 flex-1 flex-col">
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="mx-auto flex max-w-[720px] flex-col gap-5 px-6 py-6">
-          <ThreadFolder session={session}>
-            {groupMessages(session.messages).map((g) =>
-              Array.isArray(g) ? <ToolGroup key={g[0].id} tools={g} /> : <MessageRow key={g.id} message={g} />,
-            )}
-            {draft && <DraftRow text={draft} />}
-          </ThreadFolder>
-          {approvals.map((a) => (
-            <ApprovalCard key={a.id} approval={a} />
-          ))}
-          {running && !draft && approvals.length === 0 && (
-            <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
-              <span className="size-1.5 animate-pulse rounded-full bg-chart-2" />
-              Working…
-            </div>
-          )}
-          <div ref={bottom} />
-        </div>
-      </ScrollArea>
-      <div className="mx-auto w-full max-w-[720px] px-6 pb-5">
-        <Composer session={session} />
-      </div>
-      {overId === session.id && <DropOverlay />}
     </div>
   );
 }

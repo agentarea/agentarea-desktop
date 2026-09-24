@@ -101,7 +101,8 @@ interface AppState {
   /** Stop the running local turn */
   stop: (sessionId: string) => Promise<void>;
   select: (id: string | null) => void;
-  newSession: () => Promise<void>;
+  /** open a new thread; an untouched one is reused unless listed in `exclude` */
+  newSession: (exclude?: string[]) => Promise<void>;
   setRunner: (sessionId: string, runner: Runner, agent?: CatalogItem) => void;
   /** model / effort for the next turns of a local thread; null = default */
   setModel: (sessionId: string, model: string | null) => void;
@@ -509,9 +510,10 @@ export const useAppStore = create<AppState>((set, get) => {
     },
     select: (id) => set({ selectedId: id }),
 
-    newSession: async () => {
-      // An untouched thread is reused instead of piling up empty ones.
-      const blank = get().sessions.find((s) => s.messages.length === 0 && !s.clientId);
+    newSession: async (exclude = []) => {
+      // An untouched thread is reused instead of piling up empty ones (but not
+      // one already open in another pane).
+      const blank = get().sessions.find((s) => s.messages.length === 0 && !s.clientId && !exclude.includes(s.id));
       if (blank) return set({ selectedId: blank.id });
       const session: Session = {
         id: newId(),
