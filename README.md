@@ -60,9 +60,19 @@ pending approvals and replies you haven't read.
 A thread keeps its runner once the first message is sent (the next turn resumes
 that runner's own session). Threads live in `localStorage` for now.
 
-**Views.** Focus (one thread) or a grid of 2–4 panes (⌘1–⌘4 sets the count;
-⌘[ / ⌘] steps between threads, ⌘Enter zooms a pane, ⌘T opens a new thread,
-⌃1–⌃9 switches workspace).
+**Views.** One pane, or up to four split like Claude desktop: drag a thread,
+a pinned app, an app from the Apps panel or a plugin's sidebar entry onto the
+main area and drop it on a side of a pane (a plain click still opens it
+full-page). Panes hold threads, MCP apps and plugin pages side by side; drag a
+pane's header to move it, drag a divider to resize (double-click resets).
+⌘1–⌘4 focuses a pane, ⌘[ / ⌘] steps between panes, ⌘Enter zooms one, ⌘W
+closes it, ⌘\\ splits with a new thread, ⌘T opens a new thread, ⌃1–⌃9
+switches workspace. **Groups:** with two or more panes open, "Save group" (⌘S)
+names the split; it appears under Groups in the sidebar and a click restores
+it exactly (contents and sizes). While a group is open, layout changes save to
+it; "Close group" goes back to one pane. Groups are kept per workspace in
+`localStorage`, and a pane whose thread, app or plugin is gone shows a
+placeholder with Remove.
 Each local thread works in a folder: a picked one, or its own `~/AgentArea/<id>`;
 files dropped on a thread are copied there (or read in place when a folder is
 picked). Replies render as markdown; local file links become chips that open

@@ -10,6 +10,7 @@ import { AddAppDialog } from '@/components/AddAppDialog';
 import { EntityIcon } from '@/components/EntityIcon';
 import { AppView } from '@/components/AppView';
 import type { AppRef } from '@/lib/pinnedApps';
+import { startPaneDrag } from './SplitView';
 import { PluginFrame } from '@/components/PluginFrame';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -125,6 +126,33 @@ const cloudKey = (a: McpApp) => `cloud:${a.instance_id}/${a.tool_name}`;
 const localKey = (a: LocalApp) => `local:${a.serverId}/${a.toolName}`;
 const serverKey = (id: string) => `server:${id}`;
 
+// An app as a self-contained reference: AppView opens it, the sidebar pins
+// it, and a split pane holds it.
+const localRef = (a: LocalApp): AppRef => ({
+  key: localKey(a),
+  kind: 'local',
+  title: a.title,
+  subtitle: a.serverName,
+  icons: a.icons,
+  seed: localKey(a),
+  toolName: a.toolName,
+  resourceUri: a.resourceUri,
+  requiresInput: a.requiresInput,
+  serverId: a.serverId,
+});
+const cloudRef = (a: McpApp, icons?: string[]): AppRef => ({
+  key: cloudKey(a),
+  kind: 'cloud',
+  title: a.title || a.tool_name,
+  subtitle: a.instance_name,
+  icons,
+  seed: a.instance_id,
+  toolName: a.tool_name,
+  resourceUri: a.resource_uri,
+  requiresInput: a.requires_input,
+  instanceId: a.instance_id,
+});
+
 
 // Installed servers start once per app run when the panel opens; one the user
 // stopped stays stopped.
@@ -172,26 +200,21 @@ function SectionHeader({ icon, title, action }: { icon: ReactNode; title: string
 }
 
 function AppRow({
-  title,
-  subtitle,
-  icons,
-  seed,
-  local,
+  app,
   selected,
   onSelect,
 }: {
-  title: string;
-  subtitle: string;
-  icons?: string[];
-  seed: string;
-  local: boolean;
+  app: AppRef;
   selected: boolean;
   onSelect: () => void;
 }) {
+  const { title, subtitle, icons, seed } = app;
   return (
     <button
       type="button"
       onClick={onSelect}
+      // Drag onto the main area to open it in a split.
+      onPointerDown={(e) => startPaneDrag(e, { kind: 'app', app })}
       className={cn(
         'flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-accent',
         selected && 'bg-accent',
@@ -202,7 +225,7 @@ function AppRow({
         <span className="truncate text-sm">{title}</span>
         <span className="truncate text-xs text-muted-foreground">{subtitle}</span>
       </span>
-      <WhereBadge local={local} />
+      <WhereBadge local={app.kind === 'local'} />
     </button>
   );
 }
@@ -272,35 +295,8 @@ export function AppsPanel({ connected }: AppsPanelProps) {
   const cloudApp = cloudApps.find((a) => cloudKey(a) === selected) ?? null;
   const server = servers.find((s) => serverKey(s.id) === selected) ?? null;
 
-  // The selected app as a self-contained reference: AppView opens it, and the
-  // same object is what gets pinned to the sidebar.
-  const appRef: AppRef | null = localApp
-    ? {
-        key: localKey(localApp),
-        kind: 'local',
-        title: localApp.title,
-        subtitle: localApp.serverName,
-        icons: localApp.icons,
-        seed: localKey(localApp),
-        toolName: localApp.toolName,
-        resourceUri: localApp.resourceUri,
-        requiresInput: localApp.requiresInput,
-        serverId: localApp.serverId,
-      }
-    : cloudApp
-      ? {
-          key: cloudKey(cloudApp),
-          kind: 'cloud',
-          title: cloudApp.title || cloudApp.tool_name,
-          subtitle: cloudApp.instance_name,
-          icons: mcps.find((m) => m.id === cloudApp.instance_id)?.icons,
-          seed: cloudApp.instance_id,
-          toolName: cloudApp.tool_name,
-          resourceUri: cloudApp.resource_uri,
-          requiresInput: cloudApp.requires_input,
-          instanceId: cloudApp.instance_id,
-        }
-      : null;
+  const iconsOf = (a: McpApp) => mcps.find((m) => m.id === a.instance_id)?.icons;
+  const appRef: AppRef | null = localApp ? localRef(localApp) : cloudApp ? cloudRef(cloudApp, iconsOf(cloudApp)) : null;
 
   const refresh = () => {
     void useLocalMcp.getState().reload();
@@ -361,11 +357,7 @@ export function AppsPanel({ connected }: AppsPanelProps) {
                   {apps.map((a) => (
                     <AppRow
                       key={localKey(a)}
-                      title={a.title}
-                      subtitle={a.serverName}
-                      icons={a.icons}
-                      seed={localKey(a)}
-                      local
+                      app={localRef(a)}
                       selected={selected === localKey(a)}
                       onSelect={() => setSelected(localKey(a))}
                     />
@@ -389,11 +381,7 @@ export function AppsPanel({ connected }: AppsPanelProps) {
               cloudApps.map((a) => (
                 <AppRow
                   key={cloudKey(a)}
-                  title={a.title || a.tool_name}
-                  subtitle={a.instance_name}
-                  icons={mcps.find((m) => m.id === a.instance_id)?.icons}
-                  seed={a.instance_id}
-                  local={false}
+                  app={cloudRef(a, iconsOf(a))}
                   selected={selected === cloudKey(a)}
                   onSelect={() => setSelected(cloudKey(a))}
                 />

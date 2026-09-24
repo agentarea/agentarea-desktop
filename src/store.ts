@@ -134,6 +134,8 @@ function savedWorkspace(): string | null {
 let activeWorkspace: string | null = savedWorkspace();
 const legacySessionsKey = () => `aa.sessions:${config.apiBaseUrl}`;
 const sessionsKey = () => `aa.sessions:${config.apiBaseUrl}:${activeWorkspace ?? 'default'}`;
+/** saved split layouts (src/lib/groups.ts) belong to the same workspace as the threads in them */
+export const groupsKey = () => `aa.groups:${config.apiBaseUrl}:${activeWorkspace ?? 'default'}`;
 
 function loadSessions(): Session[] {
   try {

@@ -22,9 +22,10 @@ function errorText(e: unknown): string {
 /**
  * One MCP App: header (where it runs, pin to sidebar) and the sandboxed frame.
  * Local apps start their server first if it isn't running, so a pinned app
- * opens with one click even right after launch.
+ * opens with one click even right after launch. In a split pane the pane
+ * draws a compact header instead (`chrome={false}`).
  */
-export function AppView({ app }: { app: AppRef }) {
+export function AppView({ app, chrome = true }: { app: AppRef; chrome?: boolean }) {
   const pinned = usePinnedApps((s) => s.pinned.some((p) => p.key === app.key));
   const toggle = usePinnedApps((s) => s.toggle);
   const [state, setState] = useState<{ key: string; data?: McpAppResource; error?: string } | null>(null);
@@ -59,28 +60,30 @@ export function AppView({ app }: { app: AppRef }) {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-2.5">
-        <div className="min-w-0 flex-1">
-          <h2 className="truncate text-sm font-medium">{app.title}</h2>
-          <p className="truncate text-xs text-muted-foreground">
-            {local ? `On this device · ${app.subtitle}` : `AgentArea · ${app.subtitle}`}
-          </p>
+      {chrome && (
+        <div className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-2.5">
+          <div className="min-w-0 flex-1">
+            <h2 className="truncate text-sm font-medium">{app.title}</h2>
+            <p className="truncate text-xs text-muted-foreground">
+              {local ? `On this device · ${app.subtitle}` : `AgentArea · ${app.subtitle}`}
+            </p>
+          </div>
+          <button
+            onClick={() => toggle(app)}
+            className={cn(
+              'flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[12px] transition-colors hover:bg-accent',
+              pinned ? 'text-foreground' : 'text-muted-foreground',
+            )}
+            title={pinned ? 'Unpin from sidebar' : 'Pin to sidebar'}
+          >
+            {pinned ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}
+            {pinned ? 'Pinned' : 'Pin'}
+          </button>
+          <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
+            {local ? 'Local' : 'Cloud'}
+          </span>
         </div>
-        <button
-          onClick={() => toggle(app)}
-          className={cn(
-            'flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[12px] transition-colors hover:bg-accent',
-            pinned ? 'text-foreground' : 'text-muted-foreground',
-          )}
-          title={pinned ? 'Unpin from sidebar' : 'Pin to sidebar'}
-        >
-          {pinned ? <PinOff className="size-3.5" /> : <Pin className="size-3.5" />}
-          {pinned ? 'Pinned' : 'Pin'}
-        </button>
-        <span className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground">
-          {local ? 'Local' : 'Cloud'}
-        </span>
-      </div>
+      )}
       {app.requiresInput ? (
         <Centered title="This app needs input">
           Its tool has required arguments, which can’t be entered here yet. Use it from a thread instead.

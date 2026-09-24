@@ -1,23 +1,27 @@
 /**
- * Split view: which threads are on screen, and where. The layout is a small
+ * Split view: what is on screen, and where — threads, MCP apps and plugin
+ * pages. The layout is a small
  * tree — a pane, or a row/column of subtrees with relative sizes — capped at
  * four panes. Every change is a pure tree edit followed by `normalize`, so a
  * row inside a row never survives and a split with one child collapses.
  *
- * The focused pane always shows the app's selected thread: selecting a thread
- * anywhere (sidebar, ⌘T, inbox, plugins) lands it in the focused pane, or
- * focuses the pane that already shows it.
+ * Selecting a thread anywhere (sidebar, ⌘T, inbox, plugins) lands it in the
+ * focused pane, or focuses the pane that already shows it.
  */
 import { create } from 'zustand';
 import { useAppStore } from '@/store';
+import type { AppRef } from './pinnedApps';
 
 export const MAX_PANES = 4;
 
 export type Zone = 'left' | 'right' | 'top' | 'bottom' | 'center';
+/** What a pane shows. Apps carry their whole ref, so a pane opens them without the Apps panel. */
+export type PaneContent = { kind: 'thread'; id: string } | { kind: 'app'; app: AppRef } | { kind: 'plugin'; id: string };
 export interface Leaf {
   kind: 'leaf';
   key: string;
-  sessionId: string | null;
+  /** null: an empty pane waiting for a thread */
+  content: PaneContent | null;
 }
 export interface Split {
   kind: 'split';
@@ -35,7 +39,7 @@ export interface DropTarget {
   rect: { left: number; top: number; width: number; height: number };
 }
 export interface Drag {
-  sessionId: string;
+  item: PaneContent;
   x: number;
   y: number;
   target: DropTarget | null;
@@ -43,8 +47,19 @@ export interface Drag {
 
 let seq = 0;
 const newKey = () => `p${++seq}`;
-const leaf = (sessionId: string | null): Leaf => ({ kind: 'leaf', key: newKey(), sessionId });
+const leaf = (content: PaneContent | null): Leaf => ({ kind: 'leaf', key: newKey(), content });
 const equal = (n: number) => Array.from({ length: n }, () => 1 / n);
+export const thread = (id: string): PaneContent => ({ kind: 'thread', id });
+
+/** One identity per thing, so the same app or thread is never open twice. */
+export function contentId(c: PaneContent | null): string | null {
+  if (!c) return null;
+  return c.kind === 'thread' ? `thread:${c.id}` : c.kind === 'app' ? `app:${c.app.key}` : `plugin:${c.id}`;
+}
+export const threadOf = (l: Leaf): string | null => (l.content?.kind === 'thread' ? l.content.id : null);
+/** threads open in panes, optionally leaving one pane out */
+export const threadIds = (n: Node, except?: string): string[] =>
+  leaves(n).flatMap((l) => (l.key !== except && threadOf(l) ? [threadOf(l)!] : []));
 
 export function leaves(n: Node): Leaf[] {
   return n.kind === 'leaf' ? [n] : n.children.flatMap(leaves);
@@ -162,20 +177,30 @@ interface PanesState {
   maximized: string | null;
   drag: Drag | null;
 
+  /** a pane being resized: the capture layer keeps iframes from eating the pointer */
+  resizing: 'row' | 'col' | null;
+
   /** make `key` the focused pane and select its thread */
   focus: (key: string) => void;
   /** the selected thread changed: show it in the focused pane, or focus its pane */
   show: (sessionId: string) => void;
   close: (key: string) => void;
+  /** empty a pane (the last one can't close) */
+  clear: (key: string) => void;
+  /** replace the whole layout, e.g. with a saved group's */
+  restore: (tree: Node, focusedKey?: string) => void;
+  /** keep just the focused pane */
+  single: () => void;
   /** add an empty pane beside `key`, focused; false when there is no room */
   split: (key: string, zone: Exclude<Zone, 'center'>) => boolean;
-  /** drop threads that no longer exist (deleted, other workspace) */
-  prune: (ids: Set<string>) => void;
+  /** drop threads that just went away (deleted, other workspace) */
+  prune: (gone: Set<string>) => void;
   toggleMaximize: () => void;
   setSizes: (path: number[], sizes: number[], persist?: boolean) => void;
   resetSizes: (path: number[]) => void;
   setDrag: (drag: Drag | null) => void;
-  drop: (sessionId: string, target: DropTarget) => void;
+  setResizing: (dir: 'row' | 'col' | null) => void;
+  drop: (item: PaneContent, target: DropTarget) => void;
 }
 
 const first = leaf(null);
@@ -191,19 +216,42 @@ export const usePanes = create<PanesState>((set, get) => {
     focusedKey: first.key,
     maximized: null,
     drag: null,
+    resizing: null,
 
     focus: (key) => {
       const l = leaves(get().tree).find((x) => x.key === key);
       if (!l) return;
       if (get().focusedKey !== key) set({ focusedKey: key });
-      if (l.sessionId && useAppStore.getState().selectedId !== l.sessionId) useAppStore.getState().select(l.sessionId);
+      const id = threadOf(l);
+      const app = useAppStore.getState();
+      // A deleted thread (a group's dangling pane) is not selectable.
+      if (id && app.selectedId !== id && app.sessions.some((s) => s.id === id)) app.select(id);
     },
 
     show: (sessionId) => {
       const { tree, focusedKey } = get();
-      const open = leaves(tree).find((l) => l.sessionId === sessionId);
+      const open = leaves(tree).find((l) => threadOf(l) === sessionId);
       if (open) return open.key !== focusedKey ? set({ focusedKey: open.key }) : undefined;
-      set({ tree: mapLeaves(tree, (l) => (l.key === focusedKey ? { ...l, sessionId } : l)) });
+      set({ tree: mapLeaves(tree, (l) => (l.key === focusedKey ? { ...l, content: thread(sessionId) } : l)) });
+    },
+
+    clear: (key) => set({ tree: mapLeaves(get().tree, (l) => (l.key === key ? { ...l, content: null } : l)) }),
+
+    restore: (tree, focusedKey) => {
+      // Fresh keys: a saved tree's could clash with panes made since.
+      const keys = new Map<string, string>();
+      const next = mapLeaves(tree, (l) => {
+        keys.set(l.key, newKey());
+        return { ...l, key: keys.get(l.key)! };
+      });
+      set({ tree: next, maximized: null });
+      get().focus(keys.get(focusedKey ?? '') ?? leaves(next)[0].key);
+    },
+
+    single: () => {
+      const { tree, focusedKey } = get();
+      const keep = leaves(tree).find((l) => l.key === focusedKey) ?? leaves(tree)[0];
+      relayout(keep, keep.key);
     },
 
     close: (key) => {
@@ -228,12 +276,13 @@ export const usePanes = create<PanesState>((set, get) => {
     prune: (ids) => {
       const { tree, focusedKey } = get();
       const list = leaves(tree);
-      const gone = list.filter((l) => l.sessionId && !ids.has(l.sessionId));
+      const isGone = (l: Leaf) => !!threadOf(l) && ids.has(threadOf(l)!);
+      const gone = list.filter(isGone);
       if (!gone.length) return;
       let next: Node | null = tree;
       for (const l of gone) next = next && leaves(next).length > 1 ? removeLeaf(next, l.key) : next;
       // The last pane stays, empty, and gets a fresh thread.
-      next = mapLeaves(next!, (l) => (l.sessionId && !ids.has(l.sessionId) ? { ...l, sessionId: null } : l));
+      next = mapLeaves(next!, (l) => (isGone(l) ? { ...l, content: null } : l));
       const kept = leaves(next);
       const focus = kept.some((l) => l.key === focusedKey) ? focusedKey : kept[0].key;
       relayout(next, focus);
@@ -257,24 +306,29 @@ export const usePanes = create<PanesState>((set, get) => {
     },
 
     setDrag: (drag) => set({ drag }),
+    setResizing: (resizing) => set({ resizing }),
 
-    drop: (sessionId, { paneKey, zone }) => {
+    drop: (item, { paneKey, zone }) => {
       const { tree } = get();
       const list = leaves(tree);
       const target = list.find((l) => l.key === paneKey);
       if (!target) return;
-      // A thread already on screen moves with its pane instead of opening twice.
-      const from = list.find((l) => l.sessionId === sessionId);
+      // Something already on screen moves with its pane instead of opening twice.
+      const from = list.find((l) => contentId(l.content) === contentId(item));
       if (zone === 'center') {
         const next = mapLeaves(tree, (l) =>
-          l.key === target.key ? { ...l, sessionId } : from && l.key === from.key ? { ...l, sessionId: target.sessionId } : l,
+          l.key === target.key
+            ? { ...l, content: item }
+            : from && l.key === from.key
+              ? { ...l, content: target.content }
+              : l,
         );
         set({ tree: next, maximized: null });
         return get().focus(target.key);
       }
       if (from?.key === target.key) return get().focus(target.key);
       if (!from && list.length >= MAX_PANES) return;
-      const add: Leaf = from ? { ...from } : leaf(sessionId);
+      const add: Leaf = from ? { ...from } : leaf(item);
       const rest = from ? removeLeaf(tree, from.key)! : tree;
       relayout(insertAt(rest, target.key, zone, add), add.key);
     },

@@ -1,11 +1,30 @@
 import { Fragment, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
-import { ArrowUp, Plus, Square, X } from 'lucide-react';
+import { ArrowUp, Plus, Puzzle, Square, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAppStore } from '@/store';
 import type { Session } from '@/data';
 import { RunnerBadge } from '@/assets/icons';
-import { leaves, MAX_PANES, usePanes, zoneAt, type DropTarget, type Leaf, type Node, type Split } from '@/lib/panes';
+import {
+  contentId,
+  leaves,
+  MAX_PANES,
+  thread,
+  threadIds,
+  usePanes,
+  zoneAt,
+  type DropTarget,
+  type Leaf,
+  type Node,
+  type PaneContent,
+  type Split,
+} from '@/lib/panes';
+import type { AppRef } from '@/lib/pinnedApps';
+import { useLocalMcp } from '@/lib/localMcp';
+import { usePlugins } from '@/lib/plugins';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { AppView } from './AppView';
+import { EntityIcon } from './EntityIcon';
+import { PluginFrame } from './PluginFrame';
 import { basename } from './format';
 import { ThreadFolder } from './FileChip';
 import { ApprovalCard, DraftRow, groupMessages, MessageRow, ToolGroup } from './MessageView';
@@ -19,12 +38,12 @@ const DRAG_THRESHOLD = 4;
 /** narrowest a pane gets when resizing, in pixels */
 const MIN_PANE = 220;
 
-/* ── Dragging a thread (sidebar row or pane header) onto the panes ───── */
+/* ── Dragging a thread, app or plugin page (sidebar, Apps panel, pane header) onto the panes ───── */
 
-/** Where a thread dragged to (x, y) would land, if anywhere. */
-function targetAt(sessionId: string, x: number, y: number): DropTarget | null {
+/** Where an item dragged to (x, y) would land, if anywhere. */
+function targetAt(item: PaneContent, x: number, y: number): DropTarget | null {
   const list = leaves(usePanes.getState().tree);
-  const from = list.find((l) => l.sessionId === sessionId);
+  const from = list.find((l) => contentId(l.content) === contentId(item));
   for (const el of document.querySelectorAll<HTMLElement>('[data-pane-key]')) {
     const r = el.getBoundingClientRect();
     if (x < r.left || x > r.right || y < r.top || y > r.bottom) continue;
@@ -52,13 +71,15 @@ const swallowClick = (e: MouseEvent) => {
 };
 
 /**
- * Start tracking a press on a thread. Under DRAG_THRESHOLD it stays a click;
- * past it, it becomes a drag with our own ghost and drop overlay (pointer
- * events, not HTML5 drag & drop, which Tauri's native file drop can swallow).
- * Esc cancels.
+ * Start tracking a press on a thread, app or plugin entry. Under
+ * DRAG_THRESHOLD it stays a click; past it, it becomes a drag with our own
+ * ghost and drop overlay (pointer events, not HTML5 drag & drop, which Tauri's
+ * native file drop can swallow). Esc cancels.
  */
-export function startThreadDrag(e: ReactPointerEvent, sessionId: string) {
-  if (e.button !== 0 || (e.target as HTMLElement).closest('button, textarea, input, a')) return;
+export function startPaneDrag(e: ReactPointerEvent, item: PaneContent) {
+  // Controls inside the source keep their clicks; the source itself may be a button.
+  const hit = (e.target as HTMLElement).closest('button, textarea, input, a');
+  if (e.button !== 0 || (hit && hit !== e.currentTarget)) return;
   const x0 = e.clientX;
   const y0 = e.clientY;
   let dragging = false;
@@ -69,7 +90,7 @@ export function startThreadDrag(e: ReactPointerEvent, sessionId: string) {
       dragging = true;
       document.body.classList.add('pane-dragging');
     }
-    usePanes.getState().setDrag({ sessionId, x: ev.clientX, y: ev.clientY, target: targetAt(sessionId, ev.clientX, ev.clientY) });
+    usePanes.getState().setDrag({ item, x: ev.clientX, y: ev.clientY, target: targetAt(item, ev.clientX, ev.clientY) });
   };
   const end = (drop: boolean) => {
     window.removeEventListener('pointermove', move);
@@ -80,7 +101,7 @@ export function startThreadDrag(e: ReactPointerEvent, sessionId: string) {
     document.body.classList.remove('pane-dragging');
     const target = usePanes.getState().drag?.target;
     usePanes.getState().setDrag(null);
-    if (drop && target) usePanes.getState().drop(sessionId, target);
+    if (drop && target) usePanes.getState().drop(item, target);
     // The release that ends a drag must not also click what it lands on.
     window.addEventListener('click', swallowClick, { capture: true, once: true });
     setTimeout(() => window.removeEventListener('click', swallowClick, true), 0);
@@ -99,21 +120,47 @@ export function startThreadDrag(e: ReactPointerEvent, sessionId: string) {
   window.addEventListener('keydown', key, true);
 }
 
-/** The ghost under the cursor and the overlay where the thread would land. */
+export const startThreadDrag = (e: ReactPointerEvent, sessionId: string) => startPaneDrag(e, thread(sessionId));
+
+/** What a pane's content is called: the thread's, app's or plugin's title. */
+export function useContentTitle(item: PaneContent | null): string {
+  const sessionTitle = useAppStore((s) => (item?.kind === 'thread' ? s.sessions.find((x) => x.id === item.id)?.title : undefined));
+  const pluginTitle = usePlugins((s) => (item?.kind === 'plugin' ? s.plugins.find((p) => p.id === item.id)?.title : undefined));
+  if (item?.kind === 'app') return item.app.title;
+  if (item?.kind === 'plugin') return pluginTitle ?? item.id;
+  return sessionTitle ?? 'Thread';
+}
+
+/** The small glyph a pane's content goes by: its runner, the app's logo, or a plugin's piece. */
+export function ContentIcon({ item }: { item: PaneContent }) {
+  const runner = useAppStore((s) => (item.kind === 'thread' ? s.sessions.find((x) => x.id === item.id)?.runner : undefined));
+  if (item.kind === 'app')
+    return <EntityIcon name={item.app.title} icons={item.app.icons} seed={item.app.seed} className="size-3.5 shrink-0 rounded-[4px] text-[6px]" />;
+  if (item.kind === 'plugin') return <Puzzle className="size-3.5 shrink-0 text-muted-foreground" />;
+  return runner ? <RunnerBadge runner={runner} className="size-3.5 shrink-0 text-muted-foreground" /> : null;
+}
+
+/**
+ * The ghost under the cursor and the overlay where the item would land, over
+ * a full-window capture layer while dragging or resizing: iframes (apps,
+ * plugins) would otherwise swallow the pointer as it crosses them.
+ */
 export function DragLayer() {
   const drag = usePanes((s) => s.drag);
-  const session = useAppStore((s) => (drag ? s.sessions.find((x) => x.id === drag.sessionId) : undefined));
+  const resizing = usePanes((s) => s.resizing);
+  const title = useContentTitle(drag?.item ?? null);
   // Keep the last spot so the overlay fades out in place instead of vanishing.
   const last = useRef<DropTarget['rect'] | null>(null);
   if (!drag) {
     last.current = null;
-    return null;
+    return resizing ? <div className="fixed inset-0 z-30" /> : null;
   }
   if (drag.target) last.current = drag.target.rect;
   const rect = last.current;
 
   return (
     <>
+      <div className="fixed inset-0 z-30" />
       {rect && (
         <div
           className="pointer-events-none fixed z-40 animate-in rounded-xl border-[1.5px] border-drop bg-drop/[0.12] transition-all duration-[120ms] ease-out fade-in-0"
@@ -129,8 +176,8 @@ export function DragLayer() {
             : { left: drag.x + 14, top: drag.y + 12 }
         }
       >
-        {session && <RunnerBadge runner={session.runner} className="size-3.5 shrink-0 text-muted-foreground" />}
-        <span className="truncate">{session?.title ?? 'Thread'}</span>
+        <ContentIcon item={drag.item} />
+        <span className="truncate">{title}</span>
       </div>
     </>
   );
@@ -138,17 +185,42 @@ export function DragLayer() {
 
 /* ── The panes ─────────────────────────────────────────── */
 
-/** The threads on screen: one filling the main area, or up to four split. */
+/** What is on screen: one thread, app or plugin page filling the main area, or up to four split. */
 export function SplitView({ overId }: { overId: string | null }) {
   const tree = usePanes((s) => s.tree);
   const maximized = usePanes((s) => s.maximized);
   const one = tree.kind === 'leaf' ? tree : maximized ? leaves(tree).find((l) => l.key === maximized) : undefined;
-  const session = useAppStore((s) => (one ? s.sessions.find((x) => x.id === one.sessionId) : undefined));
+  const c = one?.content;
+  const session = useAppStore((s) => (c?.kind === 'thread' ? s.sessions.find((x) => x.id === c.id) : undefined));
+
+  // A click into an app's or plugin's iframe never reaches this document;
+  // the window losing focus to it is the only sign — focus that pane.
+  useEffect(() => {
+    const onBlur = () =>
+      setTimeout(() => {
+        const el = document.activeElement;
+        if (el?.tagName !== 'IFRAME') return;
+        const key = el.closest<HTMLElement>('[data-pane-key]')?.dataset.paneKey;
+        if (key && usePanes.getState().focusedKey !== key) usePanes.getState().focus(key);
+      }, 0);
+    window.addEventListener('blur', onBlur);
+    return () => window.removeEventListener('blur', onBlur);
+  }, []);
 
   if (one)
     return (
       <div data-pane-key={one.key} data-session-id={session?.id} className="relative flex min-h-0 flex-1 flex-col">
-        {session && <SessionBody session={session} overId={overId} />}
+        {c?.kind === 'thread' ? (
+          session ? (
+            <SessionBody session={session} overId={overId} />
+          ) : (
+            <Dangling leaf={one} text="Thread was deleted" />
+          )
+        ) : c?.kind === 'app' ? (
+          <AppPane leaf={one} app={c.app} full />
+        ) : c?.kind === 'plugin' ? (
+          <PluginPane leaf={one} id={c.id} full />
+        ) : null}
       </div>
     );
 
@@ -197,6 +269,7 @@ function Divider({
 }) {
   const setSizes = usePanes((s) => s.setSizes);
   const resetSizes = usePanes((s) => s.resetSizes);
+  const setResizing = usePanes((s) => s.setResizing);
   const [active, setActive] = useState(false);
 
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -212,6 +285,7 @@ function Divider({
     const min = Math.min(MIN_PANE / total, pair / 2);
     let next = sizes;
     setActive(true);
+    setResizing(row ? 'row' : 'col');
     document.body.classList.add(row ? 'pane-resizing-row' : 'pane-resizing-col');
 
     const move = (ev: PointerEvent) => {
@@ -226,6 +300,7 @@ function Divider({
       el.removeEventListener('pointercancel', up);
       document.body.classList.remove('pane-resizing-row', 'pane-resizing-col');
       setActive(false);
+      setResizing(null);
       setSizes(path, next, true);
     };
     el.addEventListener('pointermove', move);
@@ -254,10 +329,11 @@ function Divider({
 }
 
 function Pane({ leaf, overId }: { leaf: Leaf; overId: string | null }) {
-  const session = useAppStore((s) => s.sessions.find((x) => x.id === leaf.sessionId));
+  const c = leaf.content;
+  const session = useAppStore((s) => (c?.kind === 'thread' ? s.sessions.find((x) => x.id === c.id) : undefined));
   const focused = usePanes((s) => s.focusedKey === leaf.key);
   const focus = usePanes((s) => s.focus);
-  const moving = usePanes((s) => !!leaf.sessionId && s.drag?.sessionId === leaf.sessionId);
+  const moving = usePanes((s) => !!c && !!s.drag && contentId(s.drag.item) === contentId(c));
 
   return (
     <div
@@ -272,20 +348,124 @@ function Pane({ leaf, overId }: { leaf: Leaf; overId: string | null }) {
         moving && 'opacity-50',
       )}
     >
-      {session ? <PaneBody leaf={leaf} session={session} focused={focused} /> : <EmptyPane leaf={leaf} />}
+      {c?.kind === 'thread' ? (
+        session ? (
+          <PaneBody leaf={leaf} session={session} focused={focused} />
+        ) : (
+          <Dangling leaf={leaf} text="Thread was deleted" />
+        )
+      ) : c?.kind === 'app' ? (
+        <AppPane leaf={leaf} app={c.app} />
+      ) : c?.kind === 'plugin' ? (
+        <PluginPane leaf={leaf} id={c.id} />
+      ) : (
+        <EmptyPane leaf={leaf} />
+      )}
       {session && overId === session.id && <DropOverlay />}
     </div>
+  );
+}
+
+/** A new thread in pane `key` — shown there even when the store reuses the selected one. */
+async function newThreadIn(key: string) {
+  usePanes.getState().focus(key);
+  await useAppStore.getState().newSession(threadIds(usePanes.getState().tree));
+  const id = useAppStore.getState().selectedId;
+  if (id) usePanes.getState().show(id);
+}
+
+/** A pane whose thread, app or plugin is gone (a saved group outlives them). */
+function Dangling({ leaf, text }: { leaf: Leaf; text: string }) {
+  const remove = () => {
+    const p = usePanes.getState();
+    if (leaves(p.tree).length > 1) return p.close(leaf.key);
+    p.clear(leaf.key);
+    void newThreadIn(leaf.key);
+  };
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-2.5 p-6 text-center">
+      <span className="text-[13px] text-muted-foreground">{text}</span>
+      <button
+        onClick={remove}
+        className="rounded-md border border-border px-2.5 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      >
+        Remove
+      </button>
+    </div>
+  );
+}
+
+/** Pane chrome for anything on screen: drag to move, double-click to maximize, × to close. */
+function PaneHeader({ leaf, title, children }: { leaf: Leaf; title: string; children?: React.ReactNode }) {
+  const close = usePanes((s) => s.close);
+  const toggleMaximize = usePanes((s) => s.toggleMaximize);
+  return (
+    <div
+      onPointerDown={(e) => leaf.content && startPaneDrag(e, leaf.content)}
+      onDoubleClick={(e) => {
+        if ((e.target as HTMLElement).closest('button')) return;
+        usePanes.getState().focus(leaf.key);
+        toggleMaximize();
+      }}
+      title="Drag to move · double-click to maximize (⌘↵)"
+      className="@container flex h-9 shrink-0 cursor-grab items-center gap-2 border-b border-border pr-1.5 pl-3 select-none"
+    >
+      {leaf.content && <ContentIcon item={leaf.content} />}
+      <span className="min-w-0 truncate text-[12.5px] font-medium text-foreground/90">{title}</span>
+      {children}
+      <button
+        onClick={() => close(leaf.key)}
+        aria-label="Close pane"
+        title="Close pane (⌘W)"
+        className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground-subtle transition-colors hover:bg-accent hover:text-foreground"
+      >
+        <X className="size-3.5" />
+      </button>
+    </div>
+  );
+}
+
+/** An MCP App in a pane: compact header here, the app's own below (or its full view when alone). */
+function AppPane({ leaf, app, full }: { leaf: Leaf; app: AppRef; full?: boolean }) {
+  // Known only once the local server list has loaded; otherwise AppView reports it.
+  const missing = useLocalMcp(
+    (s) => app.kind === 'local' && !s.listError && s.servers.length > 0 && !s.servers.some((x) => x.id === app.serverId),
+  );
+  if (missing) return <Dangling leaf={leaf} text="App no longer installed" />;
+  if (full) return <AppView key={app.key} app={app} />;
+  return (
+    <>
+      <PaneHeader leaf={leaf} title={app.title}>
+        <span className="flex-1" />
+        <span className="shrink-0 rounded-full border border-border px-1.5 py-px text-[10px] text-muted-foreground">
+          {app.kind === 'local' ? 'Local' : 'Cloud'}
+        </span>
+      </PaneHeader>
+      <AppView key={app.key} app={app} chrome={false} />
+    </>
+  );
+}
+
+/** A plugin's main page in a pane. */
+function PluginPane({ leaf, id, full }: { leaf: Leaf; id: string; full?: boolean }) {
+  const plugin = usePlugins((s) => s.plugins.find((p) => p.id === id));
+  if (!plugin?.enabled) return <Dangling leaf={leaf} text={plugin ? 'Plugin is turned off' : 'Plugin no longer installed'} />;
+  return (
+    <>
+      {!full && (
+        <PaneHeader leaf={leaf} title={plugin.title}>
+          <span className="flex-1" />
+        </PaneHeader>
+      )}
+      <PluginFrame key={plugin.id} plugin={plugin} />
+    </>
   );
 }
 
 /** A pane opened with no thread yet (e.g. ⌘\ before the thread exists). */
 function EmptyPane({ leaf }: { leaf: Leaf }) {
   const close = usePanes((s) => s.close);
-  const newThread = () => {
-    const { tree } = usePanes.getState();
-    usePanes.getState().focus(leaf.key);
-    void useAppStore.getState().newSession(leaves(tree).flatMap((l) => (l.sessionId ? [l.sessionId] : [])));
-  };
+  const newThread = () => void newThreadIn(leaf.key);
   return (
     <div className="relative flex flex-1 flex-col items-center justify-center gap-2">
       <button
@@ -310,8 +490,6 @@ function PaneBody({ leaf, session, focused }: { leaf: Leaf; session: Session; fo
   const running = useAppStore((s) => !!s.running[session.id]);
   const streaming = useAppStore((s) => s.drafts[session.id] ?? '');
   const approvals = useAppStore((s) => s.approvals[session.id]);
-  const close = usePanes((s) => s.close);
-  const toggleMaximize = usePanes((s) => s.toggleMaximize);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -326,18 +504,7 @@ function PaneBody({ leaf, session, focused }: { leaf: Leaf; session: Session; fo
 
   return (
     <>
-      <div
-        onPointerDown={(e) => startThreadDrag(e, session.id)}
-        onDoubleClick={(e) => {
-          if ((e.target as HTMLElement).closest('button')) return;
-          usePanes.getState().focus(leaf.key);
-          toggleMaximize();
-        }}
-        title="Drag to move · double-click to maximize (⌘↵)"
-        className="@container flex h-9 shrink-0 cursor-grab items-center gap-2 border-b border-border pr-1.5 pl-3 select-none"
-      >
-        <RunnerBadge runner={session.runner} className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 truncate text-[12.5px] font-medium text-foreground/90">{session.title}</span>
+      <PaneHeader leaf={leaf} title={session.title}>
         {folderLabel && (
           <span className="hidden min-w-0 shrink-[2] truncate text-[11px] text-muted-foreground-subtle @md:inline">{folderLabel}</span>
         )}
@@ -356,15 +523,7 @@ function PaneBody({ leaf, session, focused }: { leaf: Leaf; session: Session; fo
             Needs reply
           </span>
         ) : null}
-        <button
-          onClick={() => close(leaf.key)}
-          aria-label="Close pane"
-          title="Close pane (⌘W)"
-          className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground-subtle transition-colors hover:bg-accent hover:text-foreground"
-        >
-          <X className="size-3.5" />
-        </button>
-      </div>
+      </PaneHeader>
 
       {fresh ? (
         // A new thread gets the full composer: runner, folder and tools are picked here.
