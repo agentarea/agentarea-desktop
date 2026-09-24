@@ -1,0 +1,11 @@
+{
+  "id": "llm-wiki",
+  "title": "LLM Wiki",
+  "description": "Browse an LLM wiki from two sources — a local folder and the AgentArea workspace's files — and attach pages to threads.",
+  "entry": "index.html",
+  "sidebar": "sidebar.html",
+  "permissions": [
+    "fs",
+    "cloud"
+  ]
+}

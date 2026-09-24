@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --fg:#0d0d0d; --muted:#8f8f8f; --hover:#efefef; --active:#e8e8e8; --line:#e6e6e6;
+          --local:#5c5c5c; --local-bg:#efefef; --cloud:#2563eb; --cloud-bg:#e9f0fe; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg:#ececec; --muted:#8a8a8a; --hover:#2a2a2a; --active:#333; --line:#333;
+            --local:#b5b5b5; --local-bg:#2c2c2c; --cloud:#7aa7ff; --cloud-bg:rgba(59,130,246,.18); }
+  }
+  html, body { margin:0; background:transparent; color:var(--fg); font:13px/1.35 -apple-system, system-ui, sans-serif; }
+  body { padding:0 10px 10px; }
+  .bar { display:flex; gap:6px; align-items:center; padding:2px 6px 4px; }
+  input { flex:1; min-width:0; border:1px solid var(--active); background:transparent; color:var(--fg); border-radius:6px; padding:3px 7px; font:inherit; font-size:12px; outline:none; }
+  input:focus { border-color:var(--muted); }
+  button { border:0; background:var(--fg); color:#fff; border-radius:6px; padding:5px 10px; font:inherit; font-size:12px; cursor:pointer; }
+  @media (prefers-color-scheme: dark) { button { color:#111; } }
+
+  .group { margin-top:8px; }
+  .ghead { display:flex; align-items:center; gap:5px; padding:3px 6px; border-radius:6px; font-size:11.5px; color:var(--muted); user-select:none; cursor:default; }
+  .ghead:hover { background:var(--hover); }
+  .ghead .label { flex:1; min-width:0; overflow:hidden; line-height:1.3; overflow-wrap:anywhere; }
+  .ghead .label .nw { white-space:nowrap; }
+  .ghead .label b { color:var(--fg); font-weight:500; }
+  .badge { display:inline-flex; align-items:center; gap:3px; flex:none; font-size:9.5px; font-weight:650; letter-spacing:.04em; text-transform:uppercase; padding:1px 5px 1px 4px; border-radius:4px; }
+  .badge svg { width:11px; height:11px; }
+  .badge.local { color:var(--local); background:var(--local-bg); }
+  .badge.cloud { color:var(--cloud); background:var(--cloud-bg); }
+  .act { flex:none; color:var(--muted); cursor:pointer; padding:0 4px; border-radius:4px; font-size:12px; line-height:16px; }
+  .act:hover { color:var(--fg); background:var(--active); }
+
+  .row { display:flex; align-items:center; gap:4px; padding:3px 6px; border-radius:6px; cursor:default; white-space:nowrap; overflow:hidden; user-select:none; }
+  .row:hover { background:var(--hover); }
+  .row.active { background:var(--active); }
+  .chev { width:10px; flex:none; color:var(--muted); font-size:9px; text-align:center; }
+  .ic { flex:none; display:inline-flex; }
+  .ic svg { width:13px; height:13px; }
+  .ic.local { color:var(--local); }
+  .ic.cloud { color:var(--cloud); }
+  .name { overflow:hidden; text-overflow:ellipsis; }
+  .dir > .name { font-weight:500; }
+  .muted { color:var(--muted); font-size:12px; padding:4px 6px 4px 22px; }
+  .pick { padding:2px 6px 4px 22px; }
+  .rootedit { display:flex; gap:4px; padding:2px 6px 4px 22px; }
+</style>
+</head>
+<body>
+<div class="bar"><input id="q" placeholder="Filter local and cloud pages…" autocomplete="off"></div>
+<div id="tree" class="muted">Loading…</div>
+<script src="bridge.js"></script>
+<script>
+  const ICON = {
+    local: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="3" width="11" height="7.5" rx="1"/><path d="M1 13h14"/></svg>',
+    cloud: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12.5h7a3 3 0 0 0 .4-5.97A4 4 0 0 0 4.2 6.6 3 3 0 0 0 4.5 12.5z"/></svg>',
+    folder: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M1.75 4.25a1 1 0 0 1 1-1h3.1l1.4 1.5h5.99a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H2.75a1 1 0 0 1-1-1z"/></svg>',
+    file: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M4 1.75h5.25L12.5 5v9.25H4z"/><path d="M9 1.75V5.25h3.5"/></svg>',
+  };
+  const tree = document.getElementById('tree');
+  const q = document.getElementById('q');
+  // Each source keeps its own lazily loaded folders.
+  const SRC = {
+    local: { list: (path) => aa('fs.list', { path }), children: new Map(), open: new Set(['wiki']), collapsed: false },
+    cloud: { list: (path) => aa('cloud.list', { prefix: path }), children: new Map(), open: new Set(), collapsed: false },
+  };
+  let active = '';          // "src:path" of the page open in the viewer
+  let filter = '';
+  let editingRoot = false;
+  let seq = 0;
+
+  const enc = (path) => path.split('/').map(encodeURIComponent).join('/');
+  const basename = (p) => p.replace(/\/+$/, '').split('/').pop() || p;
+  const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls) e.className = cls; if (html) e.innerHTML = html; return e; };
+  const muted = (text) => { const d = el('div', 'muted'); d.textContent = text; return d; };
+
+  async function list(src, path) {
+    const s = SRC[src];
+    if (!s.children.has(path)) s.children.set(path, await s.list(path));
+    return s.children.get(path);
+  }
+  async function loadAll(src, path) {
+    for (const e of await list(src, path)) if (e.dir) await loadAll(src, e.path);
+  }
+  function hasMatch(src, path) {
+    const kids = SRC[src].children.get(path) || [];
+    return kids.some((e) => (e.dir ? hasMatch(src, e.path) : e.path.toLowerCase().includes(filter)));
+  }
+
+  async function renderTree(src, path, depth, into) {
+    for (const e of await list(src, path)) {
+      if (filter && (e.dir ? !hasMatch(src, e.path) : !e.path.toLowerCase().includes(filter))) continue;
+      const key = `${src}:${e.path}`;
+      const expanded = e.dir && (SRC[src].open.has(e.path) || !!filter);
+      const row = el('div', 'row' + (e.dir ? ' dir' : '') + (key === active ? ' active' : ''),
+        `<span class="chev">${e.dir ? (expanded ? '▾' : '▸') : ''}</span><span class="ic ${src}">${e.dir ? ICON.folder : ICON.file}</span><span class="name"></span>`);
+      row.style.paddingLeft = 6 + depth * 12 + 'px';
+      row.title = `${src === 'cloud' ? 'Cloud' : 'Local'} · ${e.path}`;
+      row.querySelector('.name').textContent = e.name;
+      row.onclick = () => {
+        if (e.dir) { SRC[src].open.has(e.path) ? SRC[src].open.delete(e.path) : SRC[src].open.add(e.path); render(); }
+        else { active = key; aa('ui.open', { hash: `${src}:${enc(e.path)}` }); render(); }
+      };
+      into.appendChild(row);
+      if (expanded) await renderTree(src, e.path, depth + 1, into);
+    }
+  }
+
+  function head(src, labelHtml, actions) {
+    const s = SRC[src];
+    const h = el('div', 'ghead',
+      `<span class="chev">${s.collapsed ? '▸' : '▾'}</span><span class="badge ${src}">${ICON[src]}${src === 'cloud' ? 'Cloud' : 'Local'}</span><span class="label">${labelHtml}</span>`);
+    h.onclick = () => { s.collapsed = !s.collapsed; render(); };
+    for (const [text, title, fn] of actions) {
+      const a = el('span', 'act');
+      a.textContent = text;
+      a.title = title;
+      a.onclick = (ev) => { ev.stopPropagation(); fn(); };
+      h.appendChild(a);
+    }
+    return h;
+  }
+
+  const escHtml = (s) => s.replace(/[&<>"]/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
+
+  async function pickLocal() { await aa('fs.pickRoot'); SRC.local.children.clear(); render(); }
+
+  async function renderLocal(into) {
+    const { path: root } = await aa('fs.root');
+    const g = el('div', 'group');
+    g.appendChild(head('local', root ? `<b>${escHtml(basename(root))}</b>` : 'no folder yet',
+      root ? [['⋯', `Change folder (${root})`, pickLocal]] : []));
+    g.firstChild.title = root ? `On this device: ${root}` : 'On this device';
+    if (!SRC.local.collapsed) {
+      if (!root) {
+        g.appendChild(muted('Pick the folder that holds your LLM wiki.'));
+        const p = el('div', 'pick', '<button>Choose wiki folder</button>');
+        p.querySelector('button').onclick = pickLocal;
+        g.appendChild(p);
+      } else {
+        const before = g.childElementCount;
+        try { await renderTree('local', '', 1, g); } catch (err) { g.appendChild(muted(err.message)); }
+        if (filter && g.childElementCount === before) g.appendChild(muted('No matches'));
+      }
+    }
+    into.appendChild(g);
+  }
+
+  async function renderCloud(into) {
+    let info;
+    try { info = await aa('cloud.info'); } catch { return; } // no cloud permission
+    const g = el('div', 'group');
+    const ws = info.workspace ? info.workspace.name : 'workspace';
+    const root = info.root || '/';
+    const actions = info.connected
+      ? [['↻', 'Refresh', () => { SRC.cloud.children.clear(); render(); }],
+         ['✎', 'Change the cloud folder', () => { editingRoot = true; SRC.cloud.collapsed = false; render(); }]]
+      : [];
+    const wsHtml = info.workspace ? `<span class="nw">AgentArea ·</span> <b>${escHtml(ws)}</b>` : 'AgentArea';
+    g.appendChild(head('cloud', `${wsHtml} <span class="nw">/ ${escHtml(root)}</span>`, actions));
+    g.firstChild.title = `AgentArea workspace files under ${root}`;
+    if (!SRC.cloud.collapsed) {
+      if (!info.connected) {
+        g.appendChild(muted('Sign in to see cloud pages'));
+      } else if (editingRoot) {
+        const f = el('form', 'rootedit', '<input placeholder="wiki/ (empty = whole library)"><button>Save</button>');
+        const input = f.querySelector('input');
+        input.value = info.root;
+        f.onsubmit = async (ev) => {
+          ev.preventDefault();
+          try { await aa('cloud.setRoot', { prefix: input.value }); editingRoot = false; SRC.cloud.children.clear(); SRC.cloud.open.clear(); }
+          catch (err) { problem.textContent = err.message; problem.hidden = false; return; }
+          render();
+        };
+        input.onkeydown = (ev) => { if (ev.key === 'Escape') { editingRoot = false; render(); } };
+        const problem = muted('');
+        problem.hidden = true;
+        g.appendChild(f);
+        g.appendChild(problem);
+        setTimeout(() => input.focus(), 0);
+      } else {
+        const before = g.childElementCount;
+        try { await renderTree('cloud', '', 1, g); } catch (err) { g.appendChild(muted(err.message)); }
+        if (g.childElementCount === before) g.appendChild(muted(filter ? 'No matches' : `No pages under ${root} yet`));
+      }
+    }
+    into.appendChild(g);
+  }
+
+  async function render() {
+    const mine = ++seq;
+    const frag = document.createElement('div');
+    await renderLocal(frag).catch((err) => frag.appendChild(muted(err.message)));
+    await renderCloud(frag).catch((err) => frag.appendChild(muted(err.message)));
+    if (mine !== seq) return; // a newer render won
+    tree.className = '';
+    tree.replaceChildren(frag);
+  }
+
+  q.oninput = async () => {
+    filter = q.value.trim().toLowerCase();
+    // Filtering searches both trees, so load every folder of each once.
+    if (filter) await Promise.all([loadAll('local', '').catch(() => {}), loadAll('cloud', '').catch(() => {})]);
+    render();
+  };
+
+  render();
+</script>
+</body>
+</html>

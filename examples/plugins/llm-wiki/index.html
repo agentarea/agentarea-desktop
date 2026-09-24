@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --fg:#0d0d0d; --muted:#6b6b6b; --line:#ececec; --code:#f6f6f6; --link:#0d0d0d;
+          --local:#5c5c5c; --local-bg:#efefef; --cloud:#2563eb; --cloud-bg:#e9f0fe; }
+  @media (prefers-color-scheme: dark) { :root { --fg:#ececec; --muted:#9a9a9a; --line:#2c2c2c; --code:#1d1d1d; --link:#ececec;
+          --local:#b5b5b5; --local-bg:#2c2c2c; --cloud:#7aa7ff; --cloud-bg:rgba(59,130,246,.18); } }
+  html, body { margin:0; background:transparent; color:var(--fg); font:15px/1.65 -apple-system, system-ui, sans-serif; }
+  header { position:sticky; top:0; display:flex; align-items:center; gap:10px; padding:10px 28px; border-bottom:1px solid var(--line); background:inherit; backdrop-filter:blur(8px); font-size:12.5px; color:var(--muted); }
+  header .path { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .badge { display:inline-flex; align-items:center; gap:4px; flex:none; font-size:11px; font-weight:600; padding:2px 8px 2px 6px; border-radius:999px; }
+  .badge svg { width:12px; height:12px; }
+  .badge.local { color:var(--local); background:var(--local-bg); }
+  .badge.cloud { color:var(--cloud); background:var(--cloud-bg); }
+  .badge[hidden] { display:none; }
+  header button { border:1px solid var(--line); background:transparent; color:var(--fg); border-radius:999px; padding:4px 11px; font:inherit; cursor:pointer; }
+  header button:hover { background:var(--code); }
+  main { max-width:760px; margin:0 auto; padding:24px 28px 60px; }
+  h1,h2,h3,h4 { line-height:1.25; margin:1.4em 0 .5em; } h1 { font-size:26px; margin-top:.2em; } h2 { font-size:20px; } h3 { font-size:16px; }
+  p, ul, ol, table, pre, blockquote { margin:0 0 .9em; }
+  code { font:13px ui-monospace, SFMono-Regular, Menlo, monospace; background:var(--code); padding:1px 5px; border-radius:5px; }
+  pre { background:var(--code); padding:12px 14px; border-radius:10px; overflow:auto; } pre code { background:none; padding:0; }
+  a { color:var(--link); text-decoration:underline; text-decoration-color:var(--line); text-underline-offset:3px; cursor:pointer; }
+  blockquote { border-left:3px solid var(--line); padding-left:12px; color:var(--muted); }
+  table { border-collapse:collapse; font-size:14px; } td, th { border:1px solid var(--line); padding:4px 8px; text-align:left; }
+  hr { border:0; border-top:1px solid var(--line); margin:1.5em 0; }
+  .empty { color:var(--muted); padding:60px 28px; text-align:center; font-size:14px; }
+  .fm { font:12px ui-monospace, Menlo, monospace; color:var(--muted); background:var(--code); border-radius:10px; padding:10px 14px; white-space:pre-wrap; margin-bottom:1.2em; }
+</style>
+</head>
+<body>
+<header><span class="badge" id="badge" hidden></span><span class="path" id="path">LLM Wiki</span><button id="attach" hidden>Attach to thread</button></header>
+<main id="doc"><div class="empty">Pick a page in the sidebar.</div></main>
+<script src="bridge.js"></script>
+<script>
+  const doc = document.getElementById('doc');
+  const pathEl = document.getElementById('path');
+  const badge = document.getElementById('badge');
+  const attach = document.getElementById('attach');
+  const ICON = {
+    local: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="3" width="11" height="7.5" rx="1"/><path d="M1 13h14"/></svg>',
+    cloud: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12.5h7a3 3 0 0 0 .4-5.97A4 4 0 0 0 4.2 6.6 3 3 0 0 0 4.5 12.5z"/></svg>',
+  };
+  // Two sources: "local" (the granted folder, fs.*) and "cloud" (AgentArea
+  // workspace files under the plugin's cloud root, cloud.*). Paths are relative
+  // to that source's root; links resolve within the same source.
+  let src = 'local';
+  let current = '';
+  let cloudInfo = null;
+
+  const read = (s, path) => aa(s === 'cloud' ? 'cloud.read' : 'fs.read', { path });
+  const enc = (path) => path.split('/').map(encodeURIComponent).join('/');
+  const go = (s, path) => { location.hash = `${s}:${enc(path)}`; };
+  // "#local:wiki/a.md" / "#cloud:wiki/a.md"; an old plain "#wiki%2Fa.md" is local.
+  function parseHash() {
+    const raw = location.hash.slice(1);
+    const m = /^(local|cloud):(.*)$/.exec(raw);
+    return m ? { src: m[1], path: decodeURIComponent(m[2]) } : { src: 'local', path: decodeURIComponent(raw) };
+  }
+
+  const esc = (s) => s.replace(/[&<>"]/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]));
+
+  function resolve(from, href) {
+    const parts = from.split('/').slice(0, -1);
+    for (const seg of href.split('/')) {
+      if (seg === '..') parts.pop(); else if (seg && seg !== '.') parts.push(seg);
+    }
+    return parts.join('/');
+  }
+
+  function inline(s) {
+    return esc(s)
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>')
+      .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (_, t, label) => `<a data-wiki="${t}">${label || t}</a>`)
+      .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, text, href) => `<a data-href="${href}">${text}</a>`);
+  }
+
+  // Small Markdown renderer: headings, lists, quotes, code, tables, front matter.
+  function render(md) {
+    const out = [];
+    let lines = md.replace(/\r/g, '').split('\n');
+    if (lines[0] === '---') {
+      const end = lines.indexOf('---', 1);
+      if (end > 0) { out.push(`<div class="fm">${esc(lines.slice(1, end).join('\n'))}</div>`); lines = lines.slice(end + 1); }
+    }
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i];
+      if (/^```/.test(l)) {
+        const buf = []; while (++i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i]);
+        out.push(`<pre><code>${esc(buf.join('\n'))}</code></pre>`); continue;
+      }
+      let m;
+      if ((m = /^(#{1,4})\s+(.*)/.exec(l))) { out.push(`<h${m[1].length}>${inline(m[2])}</h${m[1].length}>`); continue; }
+      if (/^\s*([-*_])\s*\1\s*\1[\s\1]*$/.test(l)) { out.push('<hr>'); continue; }
+      if (/^>\s?/.test(l)) {
+        const buf = []; while (i < lines.length && /^>\s?/.test(lines[i])) buf.push(lines[i++].replace(/^>\s?/, '')); i--;
+        out.push(`<blockquote>${inline(buf.join(' '))}</blockquote>`); continue;
+      }
+      if (/^\s*([-*+]|\d+\.)\s+/.test(l)) {
+        const ordered = /^\s*\d+\./.test(l); const buf = [];
+        while (i < lines.length && /^\s*([-*+]|\d+\.)\s+/.test(lines[i])) buf.push(`<li>${inline(lines[i++].replace(/^\s*([-*+]|\d+\.)\s+/, ''))}</li>`); i--;
+        out.push(`<${ordered ? 'ol' : 'ul'}>${buf.join('')}</${ordered ? 'ol' : 'ul'}>`); continue;
+      }
+      if (/^\|.*\|\s*$/.test(l) && /^\|[\s:|-]+\|\s*$/.test(lines[i + 1] || '')) {
+        const row = (r) => r.trim().replace(/^\||\|$/g, '').split('|').map((c) => inline(c.trim()));
+        const head = row(l); i += 2; const body = [];
+        while (i < lines.length && /^\|.*\|\s*$/.test(lines[i])) body.push(row(lines[i++])); i--;
+        out.push(`<table><tr>${head.map((c) => `<th>${c}</th>`).join('')}</tr>${body.map((r) => `<tr>${r.map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')}</table>`); continue;
+      }
+      if (!l.trim()) continue;
+      const buf = [l]; while (i + 1 < lines.length && lines[i + 1].trim() && !/^(#|```|>|\s*([-*+]|\d+\.)\s|\|)/.test(lines[i + 1])) buf.push(lines[++i]);
+      out.push(`<p>${inline(buf.join(' '))}</p>`);
+    }
+    return out.join('\n');
+  }
+
+  async function showBadge() {
+    badge.hidden = !current;
+    badge.className = `badge ${src}`;
+    if (src === 'cloud') {
+      if (!cloudInfo) cloudInfo = await aa('cloud.info').catch(() => null);
+      const ws = cloudInfo && cloudInfo.workspace ? cloudInfo.workspace.name : null;
+      badge.innerHTML = `${ICON.cloud}<span></span>`;
+      badge.lastChild.textContent = ws ? `Cloud · ${ws}` : 'Cloud';
+      badge.title = 'AgentArea workspace file';
+      pathEl.textContent = (cloudInfo ? cloudInfo.root : '') + current;
+    } else {
+      badge.innerHTML = `${ICON.local}<span>Local</span>`;
+      badge.title = 'File on this device';
+      pathEl.textContent = current;
+    }
+  }
+
+  async function show(where) {
+    src = where.src;
+    current = where.path;
+    pathEl.textContent = current || 'LLM Wiki';
+    attach.hidden = !current;
+    await showBadge();
+    if (!current) { doc.innerHTML = '<div class="empty">Pick a page in the sidebar.</div>'; return; }
+    const path = current;
+    try {
+      const text = await read(src, path);
+      doc.innerHTML = /\.(md|markdown)$/i.test(path) ? render(text) : `<pre><code>${esc(text)}</code></pre>`;
+      window.scrollTo(0, 0);
+    } catch (err) {
+      doc.innerHTML = `<div class="empty"></div>`; doc.firstChild.textContent = err.message;
+    }
+  }
+
+  doc.addEventListener('click', async (e) => {
+    const a = e.target.closest('a'); if (!a) return;
+    e.preventDefault();
+    if (a.dataset.href) {
+      const href = a.dataset.href.split('#')[0];
+      if (/^[a-z]+:/i.test(href)) return; // external links: no network from plugins
+      go(src, resolve(current, href));
+    } else if (a.dataset.wiki) {
+      // [[Page]] -> Page.md next to the current page, then at the root, then under wiki/ (same source).
+      const name = a.dataset.wiki.trim();
+      const guess = [...new Set([resolve(current, name + '.md'), name + '.md', 'wiki/' + name + '.md'])];
+      for (const g of guess) { try { await read(src, g); go(src, g); return; } catch {} }
+    }
+  });
+
+  attach.onclick = async () => {
+    // Local: the file's path. Cloud: an agentarea://files/… reference the agent reads via agentarea_data.
+    try { await aa(src === 'cloud' ? 'threads.attachCloud' : 'threads.attach', { path: current }); attach.textContent = 'Attached ✓'; }
+    catch (err) { attach.textContent = err.message; }
+    setTimeout(() => (attach.textContent = 'Attach to thread'), 1800);
+  };
+
+  window.addEventListener('hashchange', () => show(parseHash()));
+  show(parseHash());
+</script>
+</body>
+</html>
