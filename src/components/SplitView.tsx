@@ -34,14 +34,14 @@ import { DropOverlay } from './DropZone';
 // Enough context to reply well from a pane, without rendering a whole thread's history.
 const TILE_TRANSCRIPT_SIZE = 14;
 /** pixels the pointer moves before a press on a thread becomes a drag */
-const DRAG_THRESHOLD = 4;
+export const DRAG_THRESHOLD = 4;
 /** narrowest a pane gets when resizing, in pixels */
 const MIN_PANE = 220;
 
 /* ── Dragging a thread, app or plugin page (sidebar, Apps panel, pane header) onto the panes ───── */
 
 /** Where an item dragged to (x, y) would land, if anywhere. */
-function targetAt(item: PaneContent, x: number, y: number): DropTarget | null {
+export function targetAt(item: PaneContent, x: number, y: number): DropTarget | null {
   const list = leaves(usePanes.getState().tree);
   const from = list.find((l) => contentId(l.content) === contentId(item));
   for (const el of document.querySelectorAll<HTMLElement>('[data-pane-key]')) {
@@ -65,7 +65,7 @@ function targetAt(item: PaneContent, x: number, y: number): DropTarget | null {
   return null;
 }
 
-const swallowClick = (e: MouseEvent) => {
+export const swallowClick = (e: MouseEvent) => {
   e.stopPropagation();
   e.preventDefault();
 };

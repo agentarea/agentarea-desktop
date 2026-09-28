@@ -9,8 +9,6 @@ import {
   Puzzle,
   Inbox,
   KeyRound,
-  ChevronDown,
-  ChevronRight,
   LayoutGrid,
   Pencil,
 } from 'lucide-react';
@@ -30,6 +28,8 @@ import { localInbox } from '@/lib/inbox';
 import { PluginFrame } from '@/components/PluginFrame';
 import { usePlugins } from '@/lib/plugins';
 import { useDragDropTarget } from '@/components/DropZone';
+import { PluginEntry, SectionHeader, SectionOrder, SidebarDragLayer, SidebarSection } from '@/components/SidebarSections';
+import { fillOrder, isCollapsed, isPluginSection, pluginSection, useSidebarLayout } from '@/lib/sidebarLayout';
 import { RunnerBadge, RUNNER_LABEL } from '@/assets/icons';
 import { leaves, threadIds, usePanes, type Node } from '@/lib/panes';
 import { defaultGroupName, useGroups } from '@/lib/groups';
@@ -580,7 +580,6 @@ function Sidebar({
   const sessions = useAppStore((s) => s.sessions);
   const selectedId = useAppStore((s) => s.selectedId);
   const running = useAppStore((s) => s.running);
-  const deleteSession = useAppStore((s) => s.deleteSession);
   const inThreads = view === 'threads';
   const cloudInbox = useAppStore((s) => s.cloudInbox);
   const approvals = useAppStore((s) => s.approvals);
@@ -589,8 +588,30 @@ function Sidebar({
     [sessions, running, approvals, cloudInbox],
   );
 
+  // The middle's sections, in the user's order: sections with nothing to show
+  // keep their saved place for when they come back.
+  const hasPinned = usePinnedApps((s) => s.pinned.length > 0);
+  const hasGroups = useGroups((s) => s.groups.length > 0);
+  const plugins = usePlugins((s) => s.plugins);
+  const pluginTarget = usePlugins((s) => s.target?.id);
+  const hidden = useSidebarLayout((s) => s.hidden);
+  const savedOrder = useSidebarLayout((s) => s.order);
+  const pluginById = useMemo(
+    () => new Map(plugins.filter((p) => p.enabled).map((p) => [pluginSection(p.id), p])),
+    [plugins],
+  );
+  const order = useMemo(() => {
+    const available = [
+      ...(hasPinned ? ['pinned'] : []),
+      ...[...pluginById.keys()].filter((id) => !hidden.includes(id)),
+      ...(hasGroups ? ['groups'] : []),
+      'threads',
+    ];
+    return fillOrder(savedOrder.filter((id) => available.includes(id)), available);
+  }, [hasPinned, hasGroups, pluginById, hidden, savedOrder]);
+
   return (
-    <aside className="flex w-[260px] shrink-0 flex-col bg-sidebar text-sidebar-foreground">
+    <aside data-sidebar className="flex w-[260px] shrink-0 flex-col bg-sidebar text-sidebar-foreground">
       {/* Drag handle — macOS traffic lights float over this strip (see hiddenTitle/titleBarStyle in tauri.conf.json). */}
       <div data-tauri-drag-region className="h-[52px] shrink-0 pl-20" />
 
@@ -613,17 +634,68 @@ function Sidebar({
         <SidebarNavItem icon={AppWindow} label="Apps" active={view === 'apps'} onClick={() => onChangeView('apps')} />
         <SidebarNavItem icon={Puzzle} label="Plugins" active={view === 'plugins'} onClick={() => onChangeView('plugins')} />
         <SidebarNavItem icon={KeyRound} label="Secrets" active={view === 'secrets'} onClick={() => onChangeView('secrets')} />
-        <PinnedAppsSection active={view === 'app-page'} />
       </div>
 
-      <GroupsSection active={inThreads} onOpen={onOpenGroup} />
+      {/* One scroll area for every section, so an open plugin panel never hides
+          Threads. Radix wraps content in a display:table div that grows with
+          the longest title; make it a block so titles truncate and row badges
+          stay visible. */}
+      <ScrollArea className="min-h-0 flex-1" viewportClassName="[&>div]:!block">
+        <SectionOrder.Provider value={order}>
+          <div className="flex flex-col px-2.5 pb-2">
+            {order.map((id, i) => (
+              <SidebarSection key={id} id={id} gap={i === 0 || !(isPluginSection(id) && isPluginSection(order[i - 1]))}>
+                {id === 'pinned' ? (
+                  <PinnedAppsSection active={view === 'app-page'} />
+                ) : id === 'groups' ? (
+                  <GroupsSection active={inThreads} onOpen={onOpenGroup} />
+                ) : id === 'threads' ? (
+                  <ThreadsSection
+                    inThreads={inThreads}
+                    openIds={openIds}
+                    selectedId={selectedId}
+                    onOpenThread={onOpenThread}
+                  />
+                ) : (
+                  <PluginEntry
+                    plugin={pluginById.get(id)!}
+                    active={view === 'plugin-page' && pluginTarget === pluginById.get(id)!.id}
+                  />
+                )}
+              </SidebarSection>
+            ))}
+          </div>
+        </SectionOrder.Provider>
+      </ScrollArea>
+      <SidebarDragLayer />
 
-      <div className="mt-4 px-4 pb-1.5 text-[11px] font-medium text-muted-foreground-subtle">Threads</div>
+      <SidebarFooter />
+    </aside>
+  );
+}
 
-      {/* Radix wraps content in a display:table div that grows with the longest
-          title; make it a block so titles truncate and row badges stay visible. */}
-      <ScrollArea className="min-h-0 flex-1 px-2.5" viewportClassName="[&>div]:!block">
-        <div className="flex flex-col gap-px pb-2">
+/** The threads, newest first; drag one onto the main area to open it in a split. */
+function ThreadsSection({
+  inThreads,
+  openIds,
+  selectedId,
+  onOpenThread,
+}: {
+  inThreads: boolean;
+  openIds: Set<string>;
+  selectedId: string | null;
+  onOpenThread: (id: string) => void;
+}) {
+  const sessions = useAppStore((s) => s.sessions);
+  const running = useAppStore((s) => s.running);
+  const approvals = useAppStore((s) => s.approvals);
+  const deleteSession = useAppStore((s) => s.deleteSession);
+  const collapsed = useSidebarLayout((s) => isCollapsed(s.collapsed, 'threads'));
+  return (
+    <>
+      <SectionHeader id="threads" label="Threads" />
+      {!collapsed && (
+        <div className="flex flex-col gap-px">
           {sessions.map((s) => (
             <div
               key={s.id}
@@ -668,57 +740,8 @@ function Sidebar({
             </div>
           ))}
         </div>
-      </ScrollArea>
-
-      <PluginSidebarSections />
-
-      <SidebarFooter />
-    </aside>
-  );
-}
-
-/** Quiet status row: connection + environment, theme toggle, sign out. No heavy top bar. */
-/** Enabled plugins that ship a sidebar page get a collapsible section here. */
-function PluginSidebarSections() {
-  const all = usePlugins((s) => s.plugins);
-  const plugins = useMemo(() => all.filter((p) => p.enabled && p.sidebar), [all]);
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
-    try {
-      return JSON.parse(localStorage.getItem('aa.pluginSections') ?? '{}');
-    } catch {
-      return {};
-    }
-  });
-  const toggle = (id: string) => {
-    const next = { ...collapsed, [id]: !collapsed[id] };
-    setCollapsed(next);
-    try {
-      localStorage.setItem('aa.pluginSections', JSON.stringify(next));
-    } catch {
-      /* best-effort */
-    }
-  };
-  if (!plugins.length) return null;
-
-  return (
-    <div className="flex max-h-[45%] shrink-0 flex-col border-t border-border">
-      {plugins.map((p) => (
-        <div key={p.id} className={cn('flex min-h-0 flex-col', !collapsed[p.id] && 'flex-1')}>
-          <button
-            onClick={() => toggle(p.id)}
-            // Drag onto the main area to open the plugin's page in a split.
-            onPointerDown={(e) => startPaneDrag(e, { kind: 'plugin', id: p.id })}
-            className="flex shrink-0 items-center gap-1 px-4 pt-2.5 pb-1.5 text-[11px] font-medium text-muted-foreground-subtle select-none hover:text-foreground"
-          >
-            {collapsed[p.id] ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3" />}
-            {p.title}
-          </button>
-          {!collapsed[p.id] && (
-            <PluginFrame plugin={p} page={p.sidebar!} className="min-h-[180px] w-full flex-1 border-0 bg-sidebar" />
-          )}
-        </div>
-      ))}
-    </div>
+      )}
+    </>
   );
 }
 
@@ -727,67 +750,70 @@ function GroupsSection({ active, onOpen }: { active: boolean; onOpen: (id: strin
   const groups = useGroups((s) => s.groups);
   const activeId = useGroups((s) => s.activeId);
   const [editing, setEditing] = useState<string | null>(null);
+  const collapsed = useSidebarLayout((s) => isCollapsed(s.collapsed, 'groups'));
   if (!groups.length) return null;
   return (
-    <div className="mt-4 flex max-h-[30%] shrink-0 flex-col">
-      <div className="px-4 pb-1.5 text-[11px] font-medium text-muted-foreground-subtle">Groups</div>
-      <div className="flex min-h-0 flex-col gap-px overflow-y-auto scrollbar-sleek px-2.5">
-        {groups.map((g) => {
-          const n = leaves(g.tree).length;
-          return (
-            <div
-              key={g.id}
-              onClick={() => editing !== g.id && onOpen(g.id)}
-              title={`${g.name} — ${n} pane${n === 1 ? '' : 's'}`}
-              className={cn(
-                'group flex cursor-default items-center gap-2 rounded-lg px-2.5 py-[7px] transition-colors select-none',
-                active && activeId === g.id ? 'bg-sidebar-accent' : 'hover:bg-sidebar-hover',
-              )}
-            >
-              <LayoutGrid className="size-3.5 shrink-0 text-muted-foreground" />
-              {editing === g.id ? (
-                <NameInput
-                  initial={g.name}
-                  onSubmit={(name) => {
-                    useGroups.getState().rename(g.id, name);
-                    setEditing(null);
-                  }}
-                  onCancel={() => setEditing(null)}
-                  className="flex-1 py-0 text-[12.5px]"
-                />
-              ) : (
-                <span className="min-w-0 flex-1 truncate text-[13px] leading-tight">{g.name}</span>
-              )}
-              <span className="shrink-0 text-[11px] text-muted-foreground-subtle tabular-nums group-hover:hidden">{n}</span>
-              {editing !== g.id && (
-                <>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setEditing(g.id);
+    <>
+      <SectionHeader id="groups" label="Groups" />
+      {!collapsed && (
+        <div className="flex flex-col gap-px">
+          {groups.map((g) => {
+            const n = leaves(g.tree).length;
+            return (
+              <div
+                key={g.id}
+                onClick={() => editing !== g.id && onOpen(g.id)}
+                title={`${g.name} — ${n} pane${n === 1 ? '' : 's'}`}
+                className={cn(
+                  'group flex cursor-default items-center gap-2 rounded-lg px-2.5 py-[7px] transition-colors select-none',
+                  active && activeId === g.id ? 'bg-sidebar-accent' : 'hover:bg-sidebar-hover',
+                )}
+              >
+                <LayoutGrid className="size-3.5 shrink-0 text-muted-foreground" />
+                {editing === g.id ? (
+                  <NameInput
+                    initial={g.name}
+                    onSubmit={(name) => {
+                      useGroups.getState().rename(g.id, name);
+                      setEditing(null);
                     }}
-                    className="hidden shrink-0 text-muted-foreground hover:text-foreground group-hover:block"
-                    aria-label={`Rename ${g.name}`}
-                  >
-                    <Pencil className="size-3" />
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      useGroups.getState().remove(g.id);
-                    }}
-                    className="hidden shrink-0 text-muted-foreground hover:text-foreground group-hover:block"
-                    aria-label={`Delete ${g.name}`}
-                  >
-                    <X className="size-3.5" />
-                  </button>
-                </>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
+                    onCancel={() => setEditing(null)}
+                    className="flex-1 py-0 text-[12.5px]"
+                  />
+                ) : (
+                  <span className="min-w-0 flex-1 truncate text-[13px] leading-tight">{g.name}</span>
+                )}
+                <span className="shrink-0 text-[11px] text-muted-foreground-subtle tabular-nums group-hover:hidden">{n}</span>
+                {editing !== g.id && (
+                  <>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditing(g.id);
+                      }}
+                      className="hidden shrink-0 text-muted-foreground hover:text-foreground group-hover:block"
+                      aria-label={`Rename ${g.name}`}
+                    >
+                      <Pencil className="size-3" />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        useGroups.getState().remove(g.id);
+                      }}
+                      className="hidden shrink-0 text-muted-foreground hover:text-foreground group-hover:block"
+                      aria-label={`Delete ${g.name}`}
+                    >
+                      <X className="size-3.5" />
+                    </button>
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -797,40 +823,42 @@ function PinnedAppsSection({ active }: { active: boolean }) {
   const opened = usePinnedApps((s) => s.opened);
   const open = usePinnedApps((s) => s.open);
   const unpin = usePinnedApps((s) => s.unpin);
+  const collapsed = useSidebarLayout((s) => isCollapsed(s.collapsed, 'pinned'));
   if (!pinned.length) return null;
   return (
-    <div className="mt-3">
-      <div className="px-2.5 pb-1 text-[11px] font-medium text-muted-foreground-subtle">Pinned</div>
-      {pinned.map((a) => (
-        <div
-          key={a.key}
-          onClick={() => open(a.key)}
-          // Drag onto the main area to open it in a split.
-          onPointerDown={(e) => startPaneDrag(e, { kind: 'app', app: a })}
-          title={`${a.title} — ${a.kind === 'local' ? 'on this device' : 'AgentArea'} · ${a.subtitle}`}
-          className={cn(
-            'group flex cursor-default items-center gap-2 rounded-lg px-2.5 py-[6px] text-[13px] transition-colors select-none',
-            active && opened?.key === a.key ? 'bg-sidebar-accent' : 'hover:bg-sidebar-hover',
-          )}
-        >
-          <EntityIcon name={a.title} icons={a.icons} seed={a.seed} className="size-4 rounded-[5px] text-[7px]" />
-          <span className="min-w-0 flex-1 truncate">{a.title}</span>
-          <span className="shrink-0 text-[10.5px] text-muted-foreground-subtle group-hover:hidden">
-            {a.kind === 'local' ? 'Local' : 'Cloud'}
-          </span>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              unpin(a.key);
-            }}
-            className="hidden shrink-0 text-muted-foreground hover:text-foreground group-hover:block"
-            aria-label={`Unpin ${a.title}`}
+    <>
+      <SectionHeader id="pinned" label="Pinned" />
+      {!collapsed &&
+        pinned.map((a) => (
+          <div
+            key={a.key}
+            onClick={() => open(a.key)}
+            // Drag onto the main area to open it in a split.
+            onPointerDown={(e) => startPaneDrag(e, { kind: 'app', app: a })}
+            title={`${a.title} — ${a.kind === 'local' ? 'on this device' : 'AgentArea'} · ${a.subtitle}`}
+            className={cn(
+              'group flex cursor-default items-center gap-2 rounded-lg px-2.5 py-[6px] text-[13px] transition-colors select-none',
+              active && opened?.key === a.key ? 'bg-sidebar-accent' : 'hover:bg-sidebar-hover',
+            )}
           >
-            <X className="size-3.5" />
-          </button>
-        </div>
-      ))}
-    </div>
+            <EntityIcon name={a.title} icons={a.icons} seed={a.seed} className="size-4 rounded-[5px] text-[7px]" />
+            <span className="min-w-0 flex-1 truncate">{a.title}</span>
+            <span className="shrink-0 text-[10.5px] text-muted-foreground-subtle group-hover:hidden">
+              {a.kind === 'local' ? 'Local' : 'Cloud'}
+            </span>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                unpin(a.key);
+              }}
+              className="hidden shrink-0 text-muted-foreground hover:text-foreground group-hover:block"
+              aria-label={`Unpin ${a.title}`}
+            >
+              <X className="size-3.5" />
+            </button>
+          </div>
+        ))}
+    </>
   );
 }
 
@@ -865,6 +893,7 @@ function SidebarNavItem({
   );
 }
 
+/** Quiet status row: connection + environment, theme toggle, sign out. No heavy top bar. */
 function SidebarFooter() {
   const theme = useAppStore((s) => s.settings.theme);
   const toggleTheme = useAppStore((s) => s.toggleTheme);

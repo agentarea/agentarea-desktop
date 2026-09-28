@@ -5,7 +5,7 @@
  * rendered on the right; mount them wherever there is room.
  */
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { AppWindow, Cloud, Laptop, Play, Plus, Puzzle, RefreshCw, Square, Trash2 } from 'lucide-react';
+import { AppWindow, Cloud, Eye, EyeOff, Laptop, Play, Plus, Puzzle, RefreshCw, Square, Trash2 } from 'lucide-react';
 import { AddAppDialog } from '@/components/AddAppDialog';
 import { EntityIcon } from '@/components/EntityIcon';
 import { AppView } from '@/components/AppView';
@@ -25,6 +25,7 @@ import {
   type ServerState,
 } from '@/lib/localMcp';
 import { listPlugins, setPluginEnabled, usePlugins, type Plugin } from '@/lib/plugins';
+import { pluginSection, useSidebarLayout } from '@/lib/sidebarLayout';
 import { cn } from '@/lib/utils';
 import { useAppStore } from '@/store';
 
@@ -535,6 +536,7 @@ function ServerDetail({ server, onStopped, onRemoved }: { server: LocalServer; o
  */
 export function PluginsPanel() {
   const plugins = usePlugins((s) => s.plugins);
+  const hidden = useSidebarLayout((s) => s.hidden);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -576,7 +578,12 @@ export function PluginsPanel() {
         title: p.title,
         subtitle: p.description,
         muted: !p.enabled,
-        trailing: <Toggle on={p.enabled} label={`${p.enabled ? 'Disable' : 'Enable'} ${p.title}`} onChange={() => void toggle(p)} />,
+        trailing: (
+          <>
+            {p.enabled && <SidebarToggle shown={!hidden.includes(pluginSection(p.id))} id={pluginSection(p.id)} title={p.title} />}
+            <Toggle on={p.enabled} label={`${p.enabled ? 'Disable' : 'Enable'} ${p.title}`} onChange={() => void toggle(p)} />
+          </>
+        ),
       }))}
       selected={current}
       onSelect={setSelected}
@@ -596,6 +603,26 @@ export function PluginsPanel() {
         <Note title="No plugin selected">Plugins are small local web pages that can read and message your threads.</Note>
       )}
     </ListPane>
+  );
+}
+
+/** Show or hide an enabled plugin's entry in the sidebar. */
+function SidebarToggle({ id, title, shown }: { id: string; title: string; shown: boolean }) {
+  const label = shown ? `Hide ${title} from sidebar` : `Show ${title} in sidebar`;
+  return (
+    <button
+      type="button"
+      aria-pressed={shown}
+      aria-label={label}
+      title={label}
+      onClick={() => useSidebarLayout.getState().setHidden(id, shown)}
+      className={cn(
+        'shrink-0 rounded p-0.5 transition-colors hover:bg-foreground/10 hover:text-foreground',
+        shown ? 'text-muted-foreground/60' : 'text-foreground',
+      )}
+    >
+      {shown ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
+    </button>
   );
 }
 
