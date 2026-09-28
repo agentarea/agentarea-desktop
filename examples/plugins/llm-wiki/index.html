@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<title>Context</title>
 <style>
   :root { --fg:#0d0d0d; --muted:#6b6b6b; --line:#ececec; --code:#f6f6f6; --link:#0d0d0d;
           --local:#5c5c5c; --local-bg:#efefef; --cloud:#2563eb; --cloud-bg:#e9f0fe; }
@@ -31,7 +32,7 @@
 </style>
 </head>
 <body>
-<header><span class="badge" id="badge" hidden></span><span class="path" id="path">LLM Wiki</span><button id="attach" hidden>Attach to thread</button></header>
+<header><span class="badge" id="badge" hidden></span><span class="path" id="path">Context</span><button id="attach" hidden>Attach to thread</button></header>
 <main id="doc"><div class="empty">Pick a page in the sidebar.</div></main>
 <script src="bridge.js"></script>
 <script>
@@ -138,7 +139,7 @@
   async function show(where) {
     src = where.src;
     current = where.path;
-    pathEl.textContent = current || 'LLM Wiki';
+    pathEl.textContent = current || 'Context';
     attach.hidden = !current;
     await showBadge();
     if (!current) { doc.innerHTML = '<div class="empty">Pick a page in the sidebar.</div>'; return; }

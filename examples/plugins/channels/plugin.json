@@ -1,0 +1,10 @@
+{
+  "id": "channels",
+  "title": "Channels",
+  "description": "A network of AI-persona channels (Instagram, Telegram, TikTok, YouTube, VK…) for hypothesis validation: health index, reach and costs, read from files the agents maintain in ~/AgentArea/channels.",
+  "entry": "index.html",
+  "sidebar": "sidebar.html",
+  "permissions": [
+    "fs"
+  ]
+}

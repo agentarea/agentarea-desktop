@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Channels</title>
+<style>
+  :root { --fg:#0d0d0d; --muted:#6b6b6b; --subtle:#8f8f8f; --hover:#efefef; --line:#e6e6e6; --card:#fff; --soft:#f3f3f3;
+          --s-idea:#a3a3a3; --s-setup:#d97706; --s-setup_done:#2563eb; --s-live:#16a34a; --s-paused:#737373; --s-stopped:#dc2626; --ok:#16a34a; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg:#fafafa; --muted:#a1a1a1; --subtle:#7a7a7a; --hover:#232323; --line:rgba(255,255,255,.08); --card:#1c1c1c; --soft:#262626;
+            --s-idea:#6b6b6b; --s-setup:#fbbf24; --s-setup_done:#7aa7ff; --s-live:#4ade80; --s-paused:#8a8a8a; --s-stopped:#f87171; --ok:#4ade80; }
+  }
+  html, body { margin:0; background:transparent; color:var(--fg); font:13px/1.35 "Geist", -apple-system, BlinkMacSystemFont, system-ui, sans-serif; -webkit-font-smoothing:antialiased; }
+  body { padding:0 10px 10px; }
+  .num { font-variant-numeric:tabular-nums; }
+  svg { display:block; }
+  .sum { display:block; width:100%; text-align:left; border:1px solid var(--line); background:var(--card); color:inherit; font:inherit; border-radius:8px; padding:8px 9px; cursor:pointer; margin-bottom:6px; }
+  .sum:hover { border-color:var(--subtle); }
+  .sum .l1 { display:flex; align-items:baseline; gap:6px; }
+  .sum .l1 b { font-weight:600; font-size:14px; }
+  .sum .l1 span { color:var(--muted); font-size:11.5px; }
+  .sum .l2 { display:flex; gap:10px; margin-top:4px; font-size:11.5px; color:var(--muted); white-space:nowrap; overflow:hidden; }
+  .sum .l2 b { color:var(--fg); font-weight:550; }
+  .stack { display:flex; height:5px; border-radius:3px; overflow:hidden; margin-top:7px; background:var(--soft); gap:1px; }
+  .stack i { display:block; height:100%; }
+  .row { display:flex; align-items:center; gap:8px; padding:4px 6px; border-radius:6px; cursor:default; user-select:none; }
+  .row:hover { background:var(--hover); }
+  .dot { width:8px; height:8px; border-radius:50%; flex:none; }
+  .row .nm { flex:1; }
+  .row .n { color:var(--muted); }
+  .g { padding:8px 6px 2px; font-size:11px; color:var(--subtle); }
+  .muted { color:var(--muted); font-size:12px; padding:4px 6px; }
+</style>
+</head>
+<body>
+<div id="root" class="muted">Loading…</div>
+<script src="bridge.js"></script>
+<script src="grid.js"></script>
+<script>
+  'use strict';
+  const rootEl = document.getElementById('root');
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+  let sig = '';
+
+  async function refresh() {
+    try {
+      const raw = await CH.load({ list: async () => (await aa('fs.list', { path: '' })).filter((e) => e.dir).map((e) => e.name), read: (path) => aa('fs.read', { path }) });
+      if (raw.sig === sig) return;
+      sig = raw.sig;
+      render(CH.join(raw, Date.now()));
+    } catch (err) {
+      const { path } = await aa('fs.root').catch(() => ({ path: null }));
+      rootEl.className = 'muted';
+      rootEl.textContent = path ? err.message : 'No channels folder granted yet.';
+    }
+  }
+
+  function render(d) {
+    rootEl.className = '';
+    const channels = d.personas.flatMap((p) => p.channels);
+    const t = CH.totals(channels, Date.now());
+    const stack = CH.STAGES.filter((s) => t.byStage[s]).map((s) => `<i style="width:${(t.byStage[s] / t.channels * 100).toFixed(2)}%;background:var(--s-${s})" title="${CH.STAGE_LABEL[s]}: ${t.byStage[s]}"></i>`).join('');
+    let html = `<button class="sum" id="sum" title="Open Channels">
+      <div class="l1"><b class="num">${t.channels}</b><span>channels · ${d.personas.length} personas</span></div>
+      <div class="l2 num"><span>reach <b>${CH.fmtNum(t.reach)}</b> / ${CH.fmtNum(t.target)}</span><span>budget <b>${esc(Object.entries(t.budget).map(([c, v]) => CH.fmtMoney(v.total, c)).join(' + ') || '—')}</b>/mo</span><span>posts <b>${t.scheduled}</b></span></div>
+      <div class="stack">${stack}</div></button>
+      <div class="g">Stages</div>`;
+    for (const s of CH.STAGES) {
+      html += `<div class="row" data-stage="${s}"><span class="dot" style="background:var(--s-${s})"></span><span class="nm">${CH.STAGE_LABEL[s]}</span><span class="n num">${t.byStage[s] || 0}</span></div>`;
+    }
+    if (t.next) html += `<div class="g">Next post: ${esc(CH.fmtWhen(t.next))}</div>`;
+    rootEl.innerHTML = html;
+    document.getElementById('sum').onclick = () => aa('ui.open', { hash: '' });
+    rootEl.querySelectorAll('.row').forEach((r) => { r.onclick = () => aa('ui.open', { hash: `stage=${r.dataset.stage}` }); });
+  }
+
+  setInterval(() => { if (!document.hidden) refresh(); }, 5000);
+  window.addEventListener('focus', refresh);
+  refresh();
+</script>
+</body>
+</html>

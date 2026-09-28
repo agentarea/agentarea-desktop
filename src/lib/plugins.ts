@@ -22,7 +22,7 @@ export interface Plugin {
   enabled: boolean;
   /** optional page shown as a section in the app sidebar */
   sidebar: string | null;
-  /** extra bridge powers: "fs" = read files in a folder the user grants,
+  /** extra bridge powers: "fs" = read (and reveal in Finder) files in a folder the user grants,
    *  "cloud" = read the AgentArea workspace's files under `cloudRoot` */
   permissions: string[];
   /** the granted folder, for "fs" plugins */
@@ -107,6 +107,17 @@ function cloudRoot(pluginId: string): string {
   return p.cloudRoot ?? 'wiki/';
 }
 
+/**
+ * The plugin with its granted folder. The list is loaded once, but agents add
+ * plugins and write `plugins-state.json` while the app runs, so a plugin that
+ * is missing or has no folder yet triggers one re-read before giving up.
+ */
+async function withRoot(pluginId: string): Promise<Plugin | undefined> {
+  const find = () => usePlugins.getState().plugins.find((p) => p.id === pluginId);
+  if (!find()?.root) await usePlugins.getState().reload();
+  return find();
+}
+
 /** Run one bridge method for `pluginId` against the app store. Throws on bad input. */
 export async function runBridgeMethod(pluginId: string, method: string, params: unknown): Promise<unknown> {
   const store = useAppStore.getState();
@@ -140,7 +151,7 @@ export async function runBridgeMethod(pluginId: string, method: string, params: 
 
     // ── files: only for plugins that declared "fs", only inside their folder (Rust enforces)
     case 'fs.root':
-      return { path: usePlugins.getState().plugins.find((p) => p.id === pluginId)?.root ?? null };
+      return { path: (await withRoot(pluginId))?.root ?? null };
 
     case 'fs.pickRoot': {
       const { open } = await import('@tauri-apps/plugin-dialog');
@@ -157,10 +168,24 @@ export async function runBridgeMethod(pluginId: string, method: string, params: 
     case 'fs.read':
       return invoke('plugin_fs_read', { id: pluginId, path: str(params, 'path') });
 
+    case 'fs.reveal': {
+      // Show the plugin's folder, or an entry inside it, in Finder. Read-only.
+      const p = await withRoot(pluginId);
+      if (!p?.enabled || !p.permissions.includes('fs')) throw new Error(`plugin ${pluginId} has no file access`);
+      if (!p.root) throw new Error('no folder chosen yet');
+      const raw = param(params, 'path') ?? '';
+      if (typeof raw !== 'string') throw new Error('"path" must be a string');
+      const rel = raw.replace(/^\/+|\/+$/g, '');
+      if (rel && rel.split('/').some((s) => !s || s === '.' || s === '..' || s.includes('\\'))) throw new Error('bad path');
+      const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
+      await revealItemInDir(rel ? `${p.root.replace(/\/+$/, '')}/${rel}` : p.root);
+      return { ok: true };
+    }
+
     // ── threads
     case 'threads.attach': {
       // Attach a file from the plugin's folder to a thread (default: the open one).
-      const root = usePlugins.getState().plugins.find((p) => p.id === pluginId)?.root;
+      const root = (await withRoot(pluginId))?.root;
       if (!root) throw new Error('no folder chosen yet');
       const rel = str(params, 'path').replace(/^\/+/, '');
       if (rel.split('/').includes('..')) throw new Error('bad path');

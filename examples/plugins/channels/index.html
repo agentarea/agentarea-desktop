@@ -1,0 +1,803 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Channels</title>
+<style>
+  :root {
+    --bg:#ffffff; --fg:#0d0d0d; --muted:#6b6b6b; --subtle:#8f8f8f; --faint:#c4c4c4; --line:#ececec; --line2:#e0e0e0;
+    --soft:#f7f7f7; --hover:#f3f3f3; --card:#ffffff;
+    --s-idea:#a3a3a3; --s-setup:#d97706; --s-setup_done:#2563eb; --s-live:#16a34a; --s-paused:#737373; --s-stopped:#dc2626;
+    --ok:#16a34a; --warn:#d97706; --bad:#dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#0a0a0a; --fg:#fafafa; --muted:#a1a1a1; --subtle:#7a7a7a; --faint:#444; --line:rgba(255,255,255,.08); --line2:rgba(255,255,255,.13);
+      --soft:#151515; --hover:#1a1a1a; --card:#111;
+      --s-idea:#6b6b6b; --s-setup:#fbbf24; --s-setup_done:#7aa7ff; --s-live:#4ade80; --s-paused:#8a8a8a; --s-stopped:#f87171;
+      --ok:#4ade80; --warn:#fbbf24; --bad:#f87171;
+    }
+  }
+  * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:13px/1.4 "Geist", -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif; -webkit-font-smoothing:antialiased; }
+  body { display:flex; flex-direction:column; overflow:hidden; }
+  .num { font-variant-numeric:tabular-nums; }
+  button, input, select { font:inherit; color:inherit; }
+  svg { display:block; }
+
+  .top { flex:none; display:flex; align-items:center; gap:10px; padding:10px 16px; border-bottom:1px solid var(--line); }
+  .top h1 { margin:0; font-size:15px; font-weight:600; }
+  .top .where { color:var(--subtle); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+  .top .sp { flex:1; }
+  .top .upd { color:var(--subtle); font-size:11.5px; white-space:nowrap; }
+  .seg { display:inline-flex; gap:2px; padding:2px; border:1px solid var(--line); border-radius:9px; background:var(--soft); }
+  .seg button { height:24px; padding:0 10px; border:0; border-radius:7px; background:transparent; color:var(--muted); cursor:pointer; font-size:12px; }
+  .seg button.on { background:var(--card); color:var(--fg); box-shadow:0 0 0 1px var(--line2); }
+  .ibtn { display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border:0; border-radius:7px; background:transparent; color:var(--muted); cursor:pointer; flex:none; }
+  .ibtn:hover { background:var(--hover); color:var(--fg); }
+  .ibtn svg { width:15px; height:15px; }
+  .btn { display:inline-flex; align-items:center; gap:6px; height:28px; padding:0 11px; border:1px solid var(--line2); border-radius:8px; background:var(--card); cursor:pointer; white-space:nowrap; }
+  .btn:hover { background:var(--hover); }
+  .btn.primary { background:var(--fg); color:var(--bg); border-color:var(--fg); }
+  .btn svg { width:14px; height:14px; }
+  .btn:disabled { opacity:.5; }
+
+  .kpis { flex:none; display:flex; flex-wrap:wrap; margin:10px 16px 0; border:1px solid var(--line); border-radius:12px; }
+  .kpi { flex:1 1 150px; padding:9px 13px; border-left:1px solid var(--line); min-width:0; }
+  .kpi:first-child { border-left:0; flex-grow:1.5; }
+  .kpi .lbl { color:var(--muted); font-size:11.5px; margin-bottom:2px; display:flex; gap:5px; align-items:center; }
+  .kpi .big { font-size:18px; font-weight:600; }
+  .kpi .big small { font-size:12px; font-weight:500; color:var(--subtle); margin-left:3px; }
+  .kpi .sub { color:var(--muted); font-size:11.5px; margin-top:2px; display:flex; flex-wrap:wrap; gap:2px 8px; }
+  .kpi .sub span { display:inline-flex; align-items:center; gap:4px; }
+  .bar { height:4px; border-radius:2px; background:var(--soft); border:1px solid var(--line); overflow:hidden; margin-top:6px; }
+  .bar i { display:block; height:100%; background:var(--ok); }
+  .dot { width:7px; height:7px; border-radius:50%; flex:none; background:var(--st, var(--s-idea)); }
+  .info { display:inline-flex; color:var(--subtle); cursor:help; }
+  .info svg { width:12px; height:12px; }
+
+  .filters { flex:none; display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:8px 16px; }
+  .search { position:relative; flex:0 1 240px; }
+  .search input { width:100%; height:30px; padding:0 10px 0 30px; border:1px solid var(--line2); border-radius:8px; background:var(--card); outline:none; }
+  .search svg { position:absolute; left:9px; top:8px; width:14px; height:14px; color:var(--subtle); }
+  select { height:30px; padding:0 8px; border:1px solid var(--line2); border-radius:8px; background:var(--card); outline:none; max-width:200px; }
+  .shown { color:var(--subtle); font-size:12px; margin-left:auto; }
+
+  /* main: view + push panel */
+  .main { flex:1; min-height:0; display:flex; margin:0 16px 14px; gap:0; }
+  .view { flex:1; min-width:0; position:relative; border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+  .resizer { flex:none; width:10px; cursor:col-resize; position:relative; }
+  .resizer::after { content:''; position:absolute; left:4px; top:0; bottom:0; width:2px; border-radius:1px; background:transparent; }
+  .resizer:hover::after, .resizer.drag::after { background:var(--line2); }
+  .panel { flex:none; width:440px; min-width:320px; display:flex; flex-direction:column; border:1px solid var(--line); border-radius:12px; overflow:hidden; background:var(--bg); }
+
+  /* graph */
+  #graph { width:100%; height:100%; cursor:grab; user-select:none; }
+  #graph.panning { cursor:grabbing; }
+  .cl .cl-name { font-size:22px; font-weight:650; }
+  .cl .cl-sub { font-size:13px; fill:var(--muted); }
+  .cl .cl-top { font-size:12px; font-weight:600; display:none; }
+  .people { display:none; }
+  #graph.lv1 .people { display:inline; }
+  #graph.lv1 .cl-label { display:none; }
+  #graph.lv1 .cl .cl-top { display:inline; }
+  .pn { cursor:pointer; }
+  .pn .emo { font-size:13px; }
+  .pn .lbl { font-size:8px; fill:var(--fg); display:none; paint-order:stroke; stroke:var(--bg); stroke-width:3px; }
+  #graph.lv2 .pn .lbl, .pn:hover .lbl, .pn.hl .lbl { display:inline; }
+  .pn:hover > circle, .pn.hl > circle { stroke-width:3; }
+  .sat { cursor:pointer; }
+  .sat .sat-ic { color:#fff; pointer-events:none; }
+  .sat.dim { opacity:.25; }
+  .sat.r-community circle { fill:var(--bg); stroke-width:2.2; }
+  .sat.r-engager circle { fill:var(--bg); stroke-width:1.8; stroke-dasharray:2 1.6; }
+  .sat.r-community .sat-ic, .sat.r-engager .sat-ic { color:var(--fg); }
+  .sat:hover circle { stroke:var(--fg); stroke-width:1.5; }
+  #graph.ring .edge { fill:none; stroke-width:1.1; stroke-opacity:.3; }
+  #graph.ring .edge:hover { stroke-opacity:1; stroke-width:2.4; cursor:pointer; }
+  #graph.ring .pn circle { stroke:var(--bg); stroke-width:1.5; cursor:pointer; }
+  #graph.ring .pn text { font-size:10px; fill:var(--muted); cursor:pointer; }
+  #graph.ring .hub circle { fill:var(--card); stroke:var(--fg); stroke-width:1.4; cursor:pointer; }
+  #graph.ring .hub text { font-size:11px; font-weight:600; fill:var(--fg); }
+  #graph.ring .hub .cnt { font-size:10px; font-weight:400; fill:var(--subtle); }
+  #graph.ring .arc { fill:none; stroke-width:3; stroke-linecap:round; opacity:.7; }
+  #graph.ring .arc-l { font-size:12px; font-weight:650; }
+  #graph.ring.focus .edge { stroke-opacity:.04; }
+  #graph.ring.focus .edge.hl { stroke-opacity:1; stroke-width:2; }
+  #graph.ring.focus .pn { opacity:.25; } #graph.ring.focus .pn.hl { opacity:1; }
+  #graph.ring.focus .pn.hl text { fill:var(--fg); font-weight:600; }
+  #graph.ring .people, #graph.ring .pn .lbl { display:inline; }
+  .legend b.l { width:14px; height:2px; display:inline-block; border-radius:1px; }
+  .legend b.l.dash { background:repeating-linear-gradient(90deg, var(--muted) 0 5px, transparent 5px 8px); }
+  .legend b.l.dot { background:repeating-linear-gradient(90deg, var(--muted) 0 2px, transparent 2px 5px); }
+  .legend { position:absolute; left:10px; bottom:10px; display:flex; flex-direction:column; gap:6px; padding:8px 10px; border:1px solid var(--line); border-radius:10px; background:color-mix(in srgb, var(--bg) 92%, transparent); font-size:11px; color:var(--muted); max-width:60%; }
+  .legend .row { display:flex; flex-wrap:wrap; gap:3px 10px; }
+  .legend span { display:inline-flex; align-items:center; gap:5px; }
+  .legend i { width:9px; height:9px; border-radius:50%; display:inline-block; }
+  .gtools { position:absolute; right:10px; top:10px; display:flex; gap:6px; align-items:center; }
+  .gtools select { height:26px; font-size:12px; }
+
+  /* table */
+  .tw { position:absolute; inset:0; overflow:auto; }
+  table.mx { border-collapse:separate; border-spacing:0; table-layout:fixed; }
+  .mx th, .mx td { border-bottom:1px solid var(--line); border-right:1px solid var(--line); padding:0; vertical-align:top; }
+  .mx thead th { position:sticky; top:0; z-index:3; background:var(--bg); height:34px; padding:0 10px; font-weight:550; font-size:12px; text-align:left; white-space:nowrap; }
+  .mx thead th .h { display:flex; align-items:center; gap:6px; }
+  .mx thead th .h svg { width:14px; height:14px; }
+  .mx thead th small { color:var(--subtle); font-weight:400; }
+  .mx .pc { position:sticky; left:0; z-index:2; background:var(--bg); }
+  .mx thead .pc { z-index:4; }
+  .mx tbody th.pc { text-align:left; font-weight:400; padding:7px 10px; cursor:pointer; }
+  .mx tbody th.pc:hover { background:var(--hover); }
+  .who { display:flex; align-items:center; gap:8px; min-width:0; }
+  .ava { flex:none; width:26px; height:26px; border-radius:7px; background:var(--soft); border:1px solid var(--line); display:flex; align-items:center; justify-content:center; font-size:14px; }
+  .who .t { min-width:0; line-height:1.25; }
+  .who b { display:block; font-weight:550; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .who span { display:block; color:var(--subtle); font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .mx tr.cat td { position:sticky; left:0; background:var(--soft); padding:6px 10px; font-size:11.5px; font-weight:600; color:var(--muted); border-right:0; }
+  .mx tr.cat td span { font-weight:400; color:var(--subtle); margin-left:6px; }
+  .mx td.c { cursor:pointer; overflow:hidden; }
+  .mx td.m, .mx th.mc { width:auto; }
+  .mx td.c:hover { background:var(--hover); }
+  .mx td.x { background:repeating-linear-gradient(135deg, transparent 0 6px, var(--soft) 6px 7px); }
+  .cell { padding:6px 8px 6px 9px; border-left:3px solid var(--st); min-height:44px; }
+  .cell .l1 { display:flex; align-items:center; gap:5px; font-size:11.5px; font-weight:550; color:var(--st); white-space:nowrap; }
+  .cell .l1 .pp { margin-left:auto; color:var(--muted); font-weight:500; display:inline-flex; align-items:center; gap:2px; }
+  .cell .l1 .pp svg { width:11px; height:11px; }
+  .cell .l2 { font-size:11px; color:var(--muted); margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .cell .l2 b { color:var(--fg); font-weight:550; }
+  .cell .mini { height:3px; border-radius:2px; background:var(--soft); margin-top:4px; overflow:hidden; }
+  .cell .mini i { display:block; height:100%; }
+  .cell.dim { opacity:.35; }
+  .s-idea { --st:var(--s-idea); } .s-setup { --st:var(--s-setup); } .s-setup_done { --st:var(--s-setup_done); }
+  .s-live { --st:var(--s-live); } .s-paused { --st:var(--s-paused); } .s-stopped { --st:var(--s-stopped); }
+  td.sel, th.sel { box-shadow:inset 0 0 0 2px var(--fg); }
+  .mx th.mc { font-weight:550; }
+  .mx td.m { padding:8px 10px; font-size:12px; color:var(--muted); white-space:nowrap; vertical-align:middle; overflow:hidden; text-overflow:ellipsis; }
+  .mx thead th { overflow:hidden; text-overflow:ellipsis; }
+  .mx td.m.warn { color:var(--warn); font-weight:600; }
+  .vb { display:inline-flex; align-items:center; gap:4px; color:var(--vc); font-weight:600; }
+  .vb::before { content:''; width:7px; height:7px; border-radius:50%; background:var(--vc); }
+  .cell .rb { font-size:10.5px; font-weight:500; color:var(--muted); margin-left:4px; }
+  .ocean { display:grid; grid-template-columns:118px 1fr 18px; gap:5px 8px; align-items:center; font-size:12px; }
+  .ocean .t { height:6px; border-radius:3px; background:var(--soft); border:1px solid var(--line); overflow:hidden; }
+  .ocean .t i { display:block; height:100%; background:var(--fg); opacity:.7; }
+  .chips2 { display:flex; flex-wrap:wrap; gap:5px; }
+  .chips2 span { font-size:11.5px; padding:2px 8px; border-radius:999px; border:1px solid var(--line2); }
+  .chips2.no span { color:var(--muted); text-decoration:line-through; text-decoration-color:var(--faint); }
+  .tasks { margin:0; padding-left:18px; font-size:12.5px; }
+  .split { display:flex; height:5px; border-radius:3px; overflow:hidden; background:var(--soft); margin-top:6px; gap:1px; }
+  .split i { display:block; height:100%; }
+  .sw { display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:6px; vertical-align:0; }
+  .kv.bud dd .m { color:var(--subtle); font-size:11.5px; }
+  .cell .l2.pl { color:var(--fg); white-space:normal; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; line-height:1.3; }
+  .desc { font-size:13px; line-height:1.5; }
+  .empty { padding:48px 20px; text-align:center; color:var(--muted); }
+  .err { color:var(--bad); }
+
+  /* panel content */
+  .ph { display:flex; align-items:flex-start; gap:12px; padding:14px 16px 12px; border-bottom:1px solid var(--line); }
+  .ph .ava { width:42px; height:42px; border-radius:12px; font-size:22px; }
+  .ph .t { flex:1; min-width:0; }
+  .ph .t b { display:block; font-size:15px; font-weight:600; }
+  .ph .t span { color:var(--muted); font-size:12.5px; }
+  .ph .meta { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+  .acts { display:flex; gap:8px; padding:10px 16px; border-bottom:1px solid var(--line); align-items:center; flex-wrap:wrap; }
+  .acts .msg { color:var(--muted); font-size:12px; }
+  .pb { flex:1; overflow:auto; padding:0 16px 24px; }
+  .sec { padding:13px 0; border-bottom:1px solid var(--line); }
+  .sec:last-child { border-bottom:0; }
+  .sec h3 { margin:0 0 9px; font-size:12px; font-weight:600; color:var(--muted); display:flex; gap:6px; }
+  .sec h3 .r { margin-left:auto; font-weight:400; color:var(--subtle); }
+  .stage { display:inline-flex; align-items:center; gap:5px; height:20px; padding:0 8px; border-radius:999px; font-size:11px; font-weight:600; color:var(--st); background:color-mix(in srgb, var(--st) 12%, transparent); white-space:nowrap; }
+  .stage i { width:6px; height:6px; border-radius:50%; background:currentColor; }
+  .kv { display:grid; grid-template-columns:110px 1fr; gap:7px 12px; font-size:12.5px; }
+  .kv dt { color:var(--muted); } .kv dd { margin:0; word-break:break-word; }
+  .stats { display:grid; grid-template-columns:repeat(4, 1fr); gap:10px; }
+  .stats .k { color:var(--subtle); font-size:11px; } .stats .v { font-size:16px; font-weight:600; }
+  .rows { border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  .rw { display:grid; grid-template-columns:18px 1fr auto; gap:9px; align-items:center; padding:8px 10px; border-top:1px solid var(--line); cursor:pointer; font-size:12.5px; }
+  .rw:first-child { border-top:0; }
+  .rw:hover { background:var(--hover); }
+  .rw > svg { width:15px; height:15px; color:var(--muted); }
+  .rw .m { color:var(--subtle); font-size:11.5px; }
+  .rw.post { grid-template-columns:92px 1fr auto; cursor:default; }
+  .story { font-size:13px; line-height:1.6; }
+  .story h2 { font-size:13px; margin:14px 0 6px; } .story p, .story ul { margin:0 0 9px; } .story ul { padding-left:18px; }
+  .note { font-size:12px; color:var(--muted); padding:8px 10px; border-radius:8px; background:var(--soft); }
+  .path { font:11.5px ui-monospace, SFMono-Regular, Menlo, monospace; color:var(--subtle); word-break:break-all; }
+  code { font:11.5px ui-monospace, SFMono-Regular, Menlo, monospace; background:var(--soft); border:1px solid var(--line); padding:0 4px; border-radius:4px; }
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>Channels</h1>
+  <span class="where" id="where"></span>
+  <div class="seg" id="viewSeg"><button data-v="table" class="on">Table</button><button data-v="graph">Graph</button></div>
+  <span class="sp"></span>
+  <span class="upd" id="upd"></span>
+  <button class="ibtn" id="refresh" title="Refresh" aria-label="Refresh"></button>
+  <button class="ibtn" id="reveal" title="Reveal folder in Finder" aria-label="Reveal in Finder"></button>
+</div>
+<section class="kpis" id="kpis"></section>
+<div class="filters">
+  <label class="search"><span id="searchIc"></span><input id="q" placeholder="Search persona, niche, city, handle…" autocomplete="off"></label>
+  <select id="fStage" aria-label="Stage"></select>
+  <select id="fPlat" aria-label="Platform"></select>
+  <select id="fCat" aria-label="Category"></select>
+  <select id="fCountry" aria-label="Country"></select>
+  <select id="fVal" aria-label="Valence"></select>
+  <select id="fArch" aria-label="Archetype"></select>
+  <select id="fRole" aria-label="Role"></select>
+  <select id="fSort" aria-label="Sort (table)">
+    <option value="cat">Group by category</option>
+    <option value="kpi-desc">% of KPI ↓</option>
+    <option value="kpi-asc">% of KPI ↑</option>
+    <option value="reach">Reach ↓</option>
+  </select>
+  <span class="shown num" id="shown"></span>
+</div>
+<div class="main">
+  <div class="view" id="view"><div class="empty">Loading…</div></div>
+  <div class="resizer" id="resizer" hidden title="Drag to resize"></div>
+  <aside class="panel" id="panel" hidden></aside>
+</div>
+
+<script src="bridge.js"></script>
+<script src="grid.js"></script>
+<script>
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+  const store = { get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch { return d; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
+  const I = {
+    refresh: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.5 2.5v3h-3"/></svg>',
+    folder: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M1.75 4.25a1 1 0 0 1 1-1h3.1l1.4 1.5h5.99a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H2.75a1 1 0 0 1-1-1z"/></svg>',
+    search: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>',
+    info: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="6"/><path d="M8 7.3v3.7M8 5v.2"/></svg>',
+    cal: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="2.5" y="3.5" width="11" height="10" rx="1.5"/><path d="M2.5 6.5h11M5.5 2v3M10.5 2v3"/></svg>',
+    close: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg>',
+    thread: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M2.5 3.5h11v7.5h-6l-3 2.5V11h-2z"/></svg>',
+  };
+  $('refresh').innerHTML = I.refresh; $('reveal').innerHTML = I.folder; $('searchIc').innerHTML = I.search;
+  const stagePill = (s) => `<span class="stage s-${esc(s)}"><i></i>${esc(CH.STAGE_LABEL[s] || s)}</span>`;
+  const pctColor = (p) => (p === null ? 'var(--faint)' : p >= 1 ? 'var(--ok)' : p >= 0.5 ? 'var(--warn)' : 'var(--bad)');
+  const place = (p) => [CH.flag(p.country), p.city].filter(Boolean).join(' ');
+  const shortUrl = (u) => u.replace(/^https?:\/\/(www\.)?/, '').replace(/\/$/, '');
+  const ROLE_ICON = { creator: '✎', community: '💬', engager: '♥' };
+  const VAL_COLOR = { positive: '#16a34a', neutral: '#64748b', edgy: '#dc2626' };
+  const at = (p) => (p.handle ? `@${p.handle}` : p.name);
+  const traitsLine = (p) => (p.personality ? `${p.personality.valence} · ${p.personality.archetype} · ${p.personality.humor} humour · ${p.personality.energy} energy` : '');
+  const proxyText = (p) => (p.proxyCountries.length ? p.proxyCountries.map((c) => `${CH.flag(c)} ${c}`).join(' ') : '—');
+  const BUD_COLOR = { proxy: '#0891b2', account: '#7c3aed', content: '#16a34a', ads: '#d97706', other: '#94a3b8' };
+  const moneyMap = (m) => { const e = Object.entries(m || {}); return e.length ? e.map(([c, v]) => CH.fmtMoney(v.total, c)).join(' + ') : '—'; };
+  function budgetSplit(m) {
+    const e = Object.entries(m || {}); if (e.length !== 1 || !e[0][1].total) return '';
+    const [cur, v] = e[0];
+    return `<div class="split">${CH.BUDGET_KEYS.map((k) => (v.items[k] ? `<i title="${k}: ${esc(CH.fmtMoney(v.items[k], cur))}" style="width:${(v.items[k] / v.total * 100).toFixed(1)}%;background:${BUD_COLOR[k]}"></i>` : '')).join('')}</div>`;
+  }
+  const netLine = (n) => (n.egress || n.url ? `${n.geo || n.egress || '?'} → ${n.url ? shortUrl(n.url) : 'no profile yet'}` : '');
+
+  // Two hosts, one page: inside the AgentArea plugin frame files come through the bridge;
+  // opened directly (grid.html under a static server) they come from fetch.
+  const inApp = window.parent !== window;
+  const io = inApp
+    ? { list: async () => (await aa('fs.list', { path: '' })).filter((e) => e.dir).map((e) => e.name), read: (path) => aa('fs.read', { path }) }
+    : { list: async () => null, read: async (path) => { const r = await fetch(path.split('/').map(encodeURIComponent).join('/'), { cache: 'no-store' }); if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`); return r.text(); } };
+  if (!inApp) $('reveal').hidden = true;
+
+  let root = null, data = { personas: [], platforms: [], platformCount: new Map(), errors: [] }, sig = '', lastLoad = 0;
+  let sel = null; // { kind: 'p', id } | { kind: 'c', id, platform }
+  let view = store.get('channels.view2', 'table');
+  const filter = { q: '', stage: 'all', platform: 'all', cat: 'all', sort: 'cat', country: 'all', val: 'all', arch: 'all', role: 'all' };
+  let colorBy = store.get('channels.colorBy', 'cluster');
+  let groupBy = store.get('channels.groupBy', 'category');
+
+  async function refresh(force) {
+    try {
+      if (!root) {
+        root = inApp ? (await aa('fs.root')).path : decodeURIComponent(location.pathname.replace(/\/[^/]*$/, '')) || '.';
+        $('where').textContent = root ? root.replace(/^\/Users\/[^/]+/, '~') : ''; $('where').title = root || '';
+      }
+      const raw = await CH.load(io);
+      lastLoad = Date.now();
+      if (!force && raw.sig === sig) return tick();
+      sig = raw.sig;
+      data = CH.join(raw, Date.now());
+      render();
+      if (sel) openSel(true);
+    } catch (err) {
+      $('view').innerHTML = `<div class="empty ${root ? 'err' : ''}">${root ? esc(err.message) : 'No folder granted. Plugins → Channels → grant ~/AgentArea/channels.'}</div>`;
+    }
+    tick();
+  }
+  function tick() { if (lastLoad) { const s = Math.round((Date.now() - lastLoad) / 1000); $('upd').textContent = s < 5 ? 'Up to date' : `Checked ${s}s ago`; } }
+
+  // ── filters
+  const visiblePlatforms = () => (filter.platform === 'all' ? data.platforms : data.platforms.filter((p) => p === filter.platform));
+  function personaMatches(p) {
+    if (filter.cat !== 'all' && p.category !== filter.cat) return false;
+    if (filter.country !== 'all' && p.country !== filter.country) return false;
+    if (filter.val !== 'all' && (!p.personality || p.personality.valence !== filter.val)) return false;
+    if (filter.arch !== 'all' && (!p.personality || p.personality.archetype !== filter.arch)) return false;
+    if (filter.role !== 'all' && !visiblePlatforms().some((pl) => p.cells[pl] && p.cells[pl].role === filter.role)) return false;
+    const plats = visiblePlatforms();
+    if (filter.platform !== 'all' && !plats.some((pl) => p.cells[pl])) return false;
+    if (filter.stage !== 'all' && !plats.some((pl) => p.cells[pl] && p.cells[pl].stage === filter.stage)) return false;
+    if (filter.q) {
+      const hay = [p.handle, p.name, p.niche, p.personality ? `${p.personality.valence} ${p.personality.archetype}` : '', p.character, p.category, p.city, p.country, p.id, p.story, ...p.channels.map((c) => `${c.handle} ${c.notes} ${c.mcp} ${c.network.geo}`)].join(' ').toLowerCase();
+      if (!filter.q.split(/\s+/).every((w) => hay.includes(w))) return false;
+    }
+    return true;
+  }
+  const shownChannels = (ps) => ps.flatMap((p) => visiblePlatforms().map((pl) => p.cells[pl]).filter((c) => c && (filter.stage === 'all' || c.stage === filter.stage) && (filter.role === 'all' || c.role === filter.role)));
+  function personaKpi(p) {
+    const cs = visiblePlatforms().map((pl) => p.cells[pl]).filter((c) => c && c.target > 0);
+    return cs.length ? cs.reduce((a, c) => a + (c.reach || 0), 0) / cs.reduce((a, c) => a + c.target, 0) : null;
+  }
+  function renderFilters() {
+    const all = data.personas.flatMap((p) => p.channels);
+    const byStage = {}; for (const c of all) byStage[c.stage] = (byStage[c.stage] || 0) + 1;
+    $('fStage').innerHTML = `<option value="all">All stages · ${all.length}</option>` + CH.STAGES.map((s) => `<option value="${s}" ${filter.stage === s ? 'selected' : ''}>${CH.STAGE_LABEL[s]} · ${byStage[s] || 0}</option>`).join('');
+    $('fPlat').innerHTML = `<option value="all">All platforms</option>` + data.platforms.map((p) => `<option value="${esc(p)}" ${filter.platform === p ? 'selected' : ''}>${esc(CH.platformName(p))} · ${data.platformCount.get(p)}</option>`).join('');
+    const cats = [...new Set(data.personas.map((p) => p.category))];
+    $('fCat').innerHTML = `<option value="all">All categories</option>` + cats.map((c) => `<option ${filter.cat === c ? 'selected' : ''}>${esc(c)}</option>`).join('');
+    const opts = (id, label, vals, cur) => { $(id).innerHTML = `<option value="all">${label}</option>` + vals.map((v) => `<option ${cur === v ? 'selected' : ''}>${esc(v)}</option>`).join(''); };
+    $('fCountry').innerHTML = '<option value="all">All countries</option>' + [...new Set(data.personas.map((p) => p.country).filter(Boolean))].sort().map((c) => `<option value="${esc(c)}" ${filter.country === c ? 'selected' : ''}>${CH.flag(c)} ${esc(c)} · ${data.personas.filter((p) => p.country === c).length}</option>`).join('');
+    opts('fVal', 'All valence', [...new Set(data.personas.map((p) => p.personality && p.personality.valence).filter(Boolean))].sort(), filter.val);
+    opts('fArch', 'All archetypes', [...new Set(data.personas.map((p) => p.personality && p.personality.archetype).filter(Boolean))].sort(), filter.arch);
+    opts('fRole', 'All roles', CH.ROLES, filter.role);
+    $('fSort').value = filter.sort; $('fSort').hidden = view !== 'table';
+    document.querySelectorAll('#viewSeg button').forEach((b) => b.classList.toggle('on', b.dataset.v === view));
+  }
+
+  function renderKpis(ps) {
+    const t = CH.totals(shownChannels(ps), Date.now());
+    const stages = CH.STAGES.filter((s) => t.byStage[s]).map((s) => `<span class="s-${s}"><i class="dot"></i>${t.byStage[s]} ${CH.STAGE_LABEL[s]}</span>`).join('');
+    $('kpis').innerHTML = `
+      <div class="kpi"><div class="lbl">Reach · 30d <span class="info" title="Σ reach / Σ kpi_target of channels with a target. Each channel measures reach by its own kpi_metric. Audiences may overlap — not deduplicated.">${I.info}</span></div>
+        <div class="big num">${CH.fmtNum(t.reach)}<small>/ ${CH.fmtNum(t.target)} · ${CH.fmtPct(t.pct)}</small></div>
+        <div class="bar"><i style="width:${t.pct === null ? 0 : Math.min(100, t.pct * 100).toFixed(1)}%;background:${pctColor(t.pct)}"></i></div></div>
+      <div class="kpi"><div class="lbl">Cost · 30d</div><div class="big num">${esc(CH.fmtMoneyMap(t.cost))}</div><div class="sub num"><span>${esc(t.cpk === null ? '—' : CH.fmtMoney(t.cpk, t.cpkCurrency))} per 1k reach</span></div></div>
+      <div class="kpi"><div class="lbl">Budget / month <span class="info" title="Σ planned monthly budget (channels.json budget) and Σ actual spend (spent), by category: proxy · account · content · ads · other.">${I.info}</span></div>
+        <div class="big num">${esc(moneyMap(t.budget))}<small>planned</small></div>
+        <div class="sub num"><span>spent ${esc(moneyMap(t.spentPlan))}</span></div>
+        ${budgetSplit(t.budget)}</div>
+      <div class="kpi"><div class="lbl">KPI status</div><div class="big num">${t.onTarget}<small>on target</small></div><div class="sub num"><span>${t.below} below</span><span>${t.channels - t.onTarget - t.below} no target</span></div></div>
+      <div class="kpi"><div class="lbl">Channels · ${t.channels}</div><div class="sub num" style="margin-top:4px">${stages || '<span>none</span>'}</div></div>
+      <div class="kpi"><div class="lbl">Scheduled posts</div><div class="big num">${t.scheduled}</div><div class="sub"><span>next: ${esc(CH.fmtWhen(t.next))}</span></div></div>`;
+  }
+
+  function render() {
+    renderFilters();
+    const ps = data.personas.filter(personaMatches);
+    renderKpis(ps);
+    $('shown').textContent = `${ps.length} of ${data.personas.length} personas · ${shownChannels(ps).length} channels`;
+    const errs = data.errors.length ? `<div class="empty err">${data.errors.map(esc).join('<br>')}</div>` : '';
+    if (!data.personas.length) { $('view').innerHTML = errs || '<div class="empty">No personas yet. An agent adds a folder with README.md and entries in channels.json — see SCHEMA.md.</div>'; return; }
+    if (!ps.length) { $('view').innerHTML = '<div class="empty">Nothing matches the filters.</div>'; return; }
+    view === 'graph' ? renderGraph(ps) : renderTable(ps, errs);
+  }
+
+  // ── graph: clusters (category / country / platform) as soft bubbles; personas inside on a
+  // sunflower spiral; each persona carries small platform satellites coloured by stage.
+  // Semantic zoom: overview = bubbles only; zoom in = personas; closer = labels.
+  const ARCH_COLOR = new Map([['Mentor', '#2563eb'], ['Expert', '#0891b2'], ['Everyman', '#65a30d'], ['Jester', '#db2777'], ['Rebel', '#dc2626'], ['Caregiver', '#16a34a'], ['Explorer', '#d97706'], ['Creator', '#7c3aed']]);
+  const PALETTE = ['#2563eb', '#d97706', '#16a34a', '#db2777', '#7c3aed', '#0891b2', '#dc2626', '#65a30d', '#ea580c', '#4f46e5', '#0d9488', '#a16207', '#be185d', '#475569'];
+  let zoom = { k: 1, x: 0, y: 0 }, GV = { w: 1000, h: 1000 };
+  const SPACING = 44, NODE_R = 13, SAT_R = 6.5;
+  function packCircles(items) {
+    // Greedy packing: biggest first; each next circle touches a placed one, nearest to the centre, no overlaps.
+    const placed = [];
+    for (const it of items.slice().sort((a, b) => b.r - a.r)) {
+      if (!placed.length) { it.x = 0; it.y = 0; placed.push(it); continue; }
+      let best = null;
+      for (const p of placed) for (let a = 0; a < 360; a += 10) {
+        const t = (a * Math.PI) / 180, d = p.r + it.r + 18, x = p.x + d * Math.cos(t), y = p.y + d * Math.sin(t);
+        if (placed.some((q) => Math.hypot(q.x - x, q.y - y) < q.r + it.r + 16)) continue;
+        const score = Math.hypot(x, y * 1.35);
+        if (!best || score < best.s) best = { x, y, s: score };
+      }
+      it.x = best.x; it.y = best.y; placed.push(it);
+    }
+    return placed;
+  }
+  function renderClusters(ps) {
+    const key = { category: (p) => [p.category], country: (p) => [p.country ? `${CH.flag(p.country)} ${p.country}` : 'Unknown'], platform: (p) => p.channels.map((c) => CH.platformName(c.platform)) }[groupBy] || ((p) => [p.category]);
+    const groups = new Map();
+    for (const p of ps) for (const g of key(p)) { if (!groups.has(g)) groups.set(g, []); groups.get(g).push(p); }
+    const clusters = [...groups].map(([name, list], i) => ({ name, list, r: SPACING * Math.sqrt(list.length) + 58, color: PALETTE[i % PALETTE.length] }));
+    packCircles(clusters);
+    const minX = Math.min(...clusters.map((c) => c.x - c.r)) - 30, minY = Math.min(...clusters.map((c) => c.y - c.r)) - 30;
+    const maxX = Math.max(...clusters.map((c) => c.x + c.r)) + 30, maxY = Math.max(...clusters.map((c) => c.y + c.r)) + 30;
+    GV = { w: maxX - minX, h: maxY - minY };
+    let bubbles = '', nodes = '';
+    for (const c of clusters) {
+      const cx = c.x - minX, cy = c.y - minY;
+      const chans = c.list.flatMap((p) => (groupBy === 'platform' ? p.channels.filter((ch) => CH.platformName(ch.platform) === c.name) : p.channels));
+      const t = CH.totals(chans, Date.now());
+      let bx = cx - 60, bars = '';
+      for (const st of CH.STAGES) { const n = t.byStage[st] || 0; if (!n) continue; const w = (n / chans.length) * 120; bars += `<rect x="${bx.toFixed(1)}" y="${(cy + 30).toFixed(1)}" width="${w.toFixed(1)}" height="6" fill="var(--s-${st})"/>`; bx += w; }
+      bubbles += `<g class="cl" data-cl="${esc(c.name)}" data-x="${cx}" data-y="${cy}" data-r="${c.r}">
+        <circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${c.r.toFixed(1)}" fill="${c.color}" fill-opacity=".07" stroke="${c.color}" stroke-opacity=".35"/>
+        <g class="cl-label"><text x="${cx.toFixed(1)}" y="${(cy - 6).toFixed(1)}" text-anchor="middle" class="cl-name" fill="${c.color}">${esc(c.name)}</text>
+        <text x="${cx.toFixed(1)}" y="${(cy + 18).toFixed(1)}" text-anchor="middle" class="cl-sub">${c.list.length} personas · ${chans.length} channels${t.reach !== null ? ' · reach ' + CH.fmtNum(t.reach) : ''}</text>${bars}</g>
+        <text x="${cx.toFixed(1)}" y="${(cy - c.r + 20).toFixed(1)}" text-anchor="middle" class="cl-top" fill="${c.color}">${esc(c.name)} · ${c.list.length}</text></g>`;
+      c.list.forEach((p, i) => {
+        const rr = SPACING * Math.sqrt(i + 0.5), th = i * 2.39996;
+        const x = cx + rr * Math.cos(th), y = cy + 12 + rr * Math.sin(th);
+        const chs = groupBy === 'platform' ? p.channels : p.channels;
+        let sats = '';
+        chs.forEach((ch, k) => {
+          const a = -Math.PI / 2 + (k / chs.length) * 2 * Math.PI, sx = x + (NODE_R + 7) * Math.cos(a), sy = y + (NODE_R + 7) * Math.sin(a);
+          const dim = filter.stage !== 'all' && ch.stage !== filter.stage;
+          const icon = CH.platformIcon(ch.platform).replace('<svg ', `<svg x="${(sx - 4).toFixed(1)}" y="${(sy - 4).toFixed(1)}" width="8" height="8" `);
+          sats += `<g class="sat r-${ch.role}${dim ? ' dim' : ''}" data-p="${esc(p.id)}" data-pl="${esc(ch.platform)}"><circle cx="${sx.toFixed(1)}" cy="${sy.toFixed(1)}" r="${SAT_R}" fill="var(--s-${ch.stage})" stroke="var(--s-${ch.stage})"/><g class="sat-ic">${icon}</g><title>${esc(`${at(p)} · ${CH.platformName(ch.platform)} · ${ch.role} · ${CH.STAGE_LABEL[ch.stage]}${netLine(ch.network) ? ' · ' + netLine(ch.network) : ''}`)}</title></g>`;
+        });
+        const label = `${at(p)}${p.niche ? ' · ' + p.niche : ''}`;
+        const stroke = colorBy === 'valence' ? (p.personality && VAL_COLOR[p.personality.valence]) || '#888' : colorBy === 'archetype' ? (p.personality && ARCH_COLOR.get(p.personality.archetype)) || '#888' : c.color;
+        nodes += `<g class="pn" data-p="${esc(p.id)}"><circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${NODE_R}" fill="var(--card)" stroke="${stroke}" stroke-width="2"/><text x="${x.toFixed(1)}" y="${(y + 0.5).toFixed(1)}" text-anchor="middle" dy=".35em" class="emo">${esc(p.emoji)}</text>${sats}<text x="${x.toFixed(1)}" y="${(y + NODE_R + 18).toFixed(1)}" text-anchor="middle" class="lbl">${esc(label)}</text><title>${esc(`${label} — ${p.name}${place(p) ? ' · ' + place(p) : ''}${traitsLine(p) ? '\n' + traitsLine(p) : ''}`)}</title></g>`;
+      });
+    }
+    const legendStages = CH.STAGES.map((st) => `<span><i style="background:var(--s-${st})"></i>${CH.STAGE_LABEL[st]}</span>`).join('');
+    const legendColor = colorBy === 'valence' ? Object.entries(VAL_COLOR).map(([k, v]) => `<span><i style="background:${v}"></i>${k}</span>`).join('')
+      : colorBy === 'archetype' ? [...ARCH_COLOR].map(([k, v]) => `<span><i style="background:${v}"></i>${esc(k)}</span>`).join('') : '';
+    const legendRoles = '<span><i style="background:var(--muted)"></i>creator</span><span><i style="background:transparent;border:2px solid var(--muted)"></i>community</span><span><i style="background:transparent;border:2px dashed var(--muted)"></i>engager</span>';
+    $('view').innerHTML = `<svg id="graph" viewBox="0 0 ${GV.w.toFixed(0)} ${GV.h.toFixed(0)}" preserveAspectRatio="xMidYMid meet"><g id="zg" transform="translate(${zoom.x} ${zoom.y}) scale(${zoom.k})">${bubbles}<g class="people">${nodes}</g></g></svg>
+      <div class="gtools">${modeSelect()}<select id="colorBy"><option value="cluster" ${colorBy === 'cluster' ? 'selected' : ''}>Colour: cluster</option><option value="valence" ${colorBy === 'valence' ? 'selected' : ''}>Colour: personality (valence)</option><option value="archetype" ${colorBy === 'archetype' ? 'selected' : ''}>Colour: archetype</option></select><select id="groupBy"><option value="category" ${groupBy === 'category' ? 'selected' : ''}>Group by category</option><option value="country" ${groupBy === 'country' ? 'selected' : ''}>Group by country</option><option value="platform" ${groupBy === 'platform' ? 'selected' : ''}>Group by platform</option></select><button class="btn" id="fit">Fit</button></div>
+      <div class="legend">${legendColor ? `<div class="row">${legendColor}</div>` : ''}<div class="row">${legendStages}</div><div class="row">${legendRoles}</div><div class="row">Scroll to zoom · drag to pan · click a bubble to open it</div></div>`;
+    wireClusters();
+  }
+
+  function wireClusters() {
+    const svg = $('graph'), zg = $('zg');
+    const level = () => { svg.classList.toggle('lv1', zoom.k >= 1.8); svg.classList.toggle('lv2', zoom.k >= 3.2); };
+    const apply = () => { zg.setAttribute('transform', `translate(${zoom.x} ${zoom.y}) scale(${zoom.k})`); level(); };
+    const pt = (e) => { const r = svg.getBoundingClientRect(); const s = Math.max(GV.w / r.width, GV.h / r.height); return { x: (e.clientX - r.left - (r.width - GV.w / s) / 2) * s, y: (e.clientY - r.top - (r.height - GV.h / s) / 2) * s }; };
+    svg.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const p = pt(e), k = Math.min(12, Math.max(0.5, zoom.k * Math.exp(-e.deltaY * 0.0015)));
+      zoom.x = p.x - ((p.x - zoom.x) * k) / zoom.k; zoom.y = p.y - ((p.y - zoom.y) * k) / zoom.k; zoom.k = k; apply();
+    }, { passive: false });
+    let drag = null, moved = false;
+    svg.addEventListener('pointerdown', (e) => { if (e.target.closest('.pn, .sat')) return; drag = { p: pt(e), x: zoom.x, y: zoom.y }; moved = false; svg.classList.add('panning'); svg.setPointerCapture(e.pointerId); });
+    svg.addEventListener('pointermove', (e) => { if (!drag) return; const p = pt(e); if (Math.hypot(p.x - drag.p.x, p.y - drag.p.y) > 4) moved = true; zoom.x = drag.x + p.x - drag.p.x; zoom.y = drag.y + p.y - drag.p.y; apply(); });
+    svg.addEventListener('pointerup', (e) => {
+      svg.classList.remove('panning');
+      const was = drag; drag = null;
+      if (!was || moved) return;
+      const cl = document.elementsFromPoint(e.clientX, e.clientY).map((el) => el.closest && el.closest('.cl')).find(Boolean);
+      if (cl && zoom.k < 1.8) zoomTo(+cl.dataset.x, +cl.dataset.y, +cl.dataset.r);
+    });
+    function zoomTo(x, y, r) {
+      const k = Math.min(10, Math.min(GV.w, GV.h) / (2 * r * 1.08));
+      zoom = { k: Math.max(k, 1.9), x: GV.w / 2 - Math.max(k, 1.9) * x, y: GV.h / 2 - Math.max(k, 1.9) * y }; apply();
+    }
+    svg.querySelectorAll('.pn').forEach((n) => { n.addEventListener('click', (e) => { if (e.target.closest('.sat')) return; sel = { kind: 'p', id: n.dataset.p }; setHash(); openSel(); }); });
+    svg.querySelectorAll('.sat').forEach((n) => { n.addEventListener('click', (e) => { e.stopPropagation(); sel = { kind: 'c', id: n.dataset.p, platform: n.dataset.pl }; setHash(); openSel(); }); });
+    wireCommon();
+    $('fit').onclick = () => { zoom = { k: 1, x: 0, y: 0 }; apply(); };
+    level();
+    if (sel) markSel();
+  }
+
+  // ── graph, default "Lines" mode: platform hubs in the centre, personas on an outer ring ordered by
+  // group (thin labelled arcs), one line per channel coloured by stage, dashed by role.
+  let graphMode = store.get('channels.graphMode', 'lines');
+  const modeSelect = () => `<select id="graphMode"><option value="lines" ${graphMode === 'lines' ? 'selected' : ''}>Lines</option><option value="clusters" ${graphMode === 'clusters' ? 'selected' : ''}>Clusters</option></select>`;
+  function wireCommon() {
+    $('graphMode').onchange = () => { graphMode = $('graphMode').value; store.set('channels.graphMode', graphMode); zoom = { k: 1, x: 0, y: 0 }; render(); };
+    $('colorBy').onchange = () => { colorBy = $('colorBy').value; store.set('channels.colorBy', colorBy); render(); };
+    $('groupBy').onchange = () => { groupBy = $('groupBy').value; store.set('channels.groupBy', groupBy); zoom = { k: 1, x: 0, y: 0 }; render(); };
+  }
+  function renderGraph(ps) { graphMode === 'clusters' ? renderClusters(ps) : renderRing(ps); }
+  const ROLE_DASH = { creator: '', community: '5 3', engager: '1.5 3' };
+  function renderRing(ps) {
+    const W = 1160, H = 1160, cx = W / 2, cy = H / 2; GV = { w: W, h: H };
+    const plats = visiblePlatforms().filter((pl) => ps.some((p) => p.cells[pl]));
+    const hubR = plats.length > 1 ? 140 : 0;
+    const hubs = new Map(plats.map((pl, i) => { const a = -Math.PI / 2 + (i / plats.length) * 2 * Math.PI; return [pl, { x: cx + hubR * Math.cos(a), y: cy + hubR * Math.sin(a) }]; }));
+    const keyOf = (p) => (groupBy === 'country' ? (p.country ? `${CH.flag(p.country)} ${p.country}` : 'Unknown') : p.category);
+    const groups = [...new Set(ps.map(keyOf))];
+    const gColor = new Map(groups.map((g, i) => [g, PALETTE[i % PALETTE.length]]));
+    const sorted = ps.slice().sort((a, b) => groups.indexOf(keyOf(a)) - groups.indexOf(keyOf(b)));
+    const R0 = 360, gap = 0.014 * 2 * Math.PI, n = sorted.length, span = 2 * Math.PI - gap * groups.length;
+    let ang = -Math.PI / 2, prev = null; const segs = new Map();
+    const nodes = sorted.map((p) => {
+      const g = keyOf(p);
+      if (prev !== null && g !== prev) ang += gap;
+      prev = g;
+      const a = ang; ang += span / n;
+      if (!segs.has(g)) segs.set(g, { a0: a, a1: a }); segs.get(g).a1 = a;
+      const color = colorBy === 'valence' ? (p.personality && VAL_COLOR[p.personality.valence]) || '#888' : colorBy === 'archetype' ? (p.personality && ARCH_COLOR.get(p.personality.archetype)) || '#888' : gColor.get(g);
+      return { p, a, x: cx + R0 * Math.cos(a), y: cy + R0 * Math.sin(a), color };
+    });
+    let edges = '', pn = '', arcs = '';
+    for (const nd of nodes) {
+      for (const pl of plats) {
+        const c = nd.p.cells[pl]; if (!c) continue;
+        if ((filter.stage !== 'all' && c.stage !== filter.stage) || (filter.role !== 'all' && c.role !== filter.role)) continue;
+        const h = hubs.get(pl);
+        const mx = (nd.x + h.x) / 2 + (cx - (nd.x + h.x) / 2) * 0.35, my = (nd.y + h.y) / 2 + (cy - (nd.y + h.y) / 2) * 0.35;
+        edges += `<path class="edge" data-p="${esc(nd.p.id)}" data-pl="${esc(pl)}" d="M${nd.x.toFixed(1)},${nd.y.toFixed(1)} Q${mx.toFixed(1)},${my.toFixed(1)} ${h.x.toFixed(1)},${h.y.toFixed(1)}" stroke="var(--s-${c.stage})"${ROLE_DASH[c.role] ? ` stroke-dasharray="${ROLE_DASH[c.role]}"` : ''}><title>${esc(`${at(nd.p)} → ${CH.platformName(pl)} · ${c.role} · ${CH.STAGE_LABEL[c.stage]}${netLine(c.network) ? ' · ' + netLine(c.network) : ''}`)}</title></path>`;
+      }
+      const deg = (nd.a * 180) / Math.PI, flip = (deg > 90 && deg < 270) || deg < -90;
+      const lx = cx + (R0 + 10) * Math.cos(nd.a), ly = cy + (R0 + 10) * Math.sin(nd.a);
+      pn += `<g class="pn" data-p="${esc(nd.p.id)}"><circle cx="${nd.x.toFixed(1)}" cy="${nd.y.toFixed(1)}" r="5" fill="${nd.color}"/><text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" dy=".32em" text-anchor="${flip ? 'end' : 'start'}" transform="rotate(${(flip ? deg + 180 : deg).toFixed(1)} ${lx.toFixed(1)} ${ly.toFixed(1)})">${esc(`${CH.flag(nd.p.country)} ${at(nd.p)}`)}</text><title>${esc(`${at(nd.p)} — ${nd.p.name} · ${nd.p.niche}${place(nd.p) ? ' · ' + place(nd.p) : ''}${traitsLine(nd.p) ? '\n' + traitsLine(nd.p) : ''}`)}</title></g>`;
+    }
+    const RA = R0 + 150;
+    for (const [g, sg] of segs) {
+      const a0 = sg.a0 - 0.004, a1 = sg.a1 + 0.004, large = a1 - a0 > Math.PI ? 1 : 0;
+      const p0 = [cx + RA * Math.cos(a0), cy + RA * Math.sin(a0)], p1 = [cx + RA * Math.cos(a1), cy + RA * Math.sin(a1)];
+      const am = (a0 + a1) / 2, tx = cx + (RA + 16) * Math.cos(am), ty = cy + (RA + 16) * Math.sin(am);
+      const dm = (((am * 180) / Math.PI) % 360 + 360) % 360, fl = dm > 0 && dm < 180;
+      arcs += `<path d="M${p0[0].toFixed(1)},${p0[1].toFixed(1)} A${RA},${RA} 0 ${large} 1 ${p1[0].toFixed(1)},${p1[1].toFixed(1)}" class="arc" stroke="${gColor.get(g)}"/><text class="arc-l" x="${tx.toFixed(1)}" y="${ty.toFixed(1)}" text-anchor="middle" dy=".35em" fill="${gColor.get(g)}" transform="rotate(${(fl ? dm - 90 : dm + 90).toFixed(1)} ${tx.toFixed(1)} ${ty.toFixed(1)})">${esc(g)}</text>`;
+    }
+    let hb = '';
+    for (const [pl, h] of hubs) {
+      const icon = CH.platformIcon(pl).replace('<svg ', `<svg x="${(h.x - 10).toFixed(1)}" y="${(h.y - 10).toFixed(1)}" width="20" height="20" `);
+      hb += `<g class="hub" data-pl="${esc(pl)}"><circle cx="${h.x.toFixed(1)}" cy="${h.y.toFixed(1)}" r="24"/><g style="color:var(--fg)">${icon}</g><text x="${h.x.toFixed(1)}" y="${(h.y + 38).toFixed(1)}" text-anchor="middle">${esc(CH.platformName(pl))} <tspan class="cnt">${ps.filter((p) => p.cells[pl]).length}</tspan></text></g>`;
+    }
+    const legendColor = colorBy === 'valence' ? Object.entries(VAL_COLOR).map(([k, v]) => `<span><i style="background:${v}"></i>${k}</span>`).join('')
+      : colorBy === 'archetype' ? [...ARCH_COLOR].map(([k, v]) => `<span><i style="background:${v}"></i>${esc(k)}</span>`).join('') : '';
+    const legendStages = CH.STAGES.map((st) => `<span><b class="l" style="background:var(--s-${st})"></b>${CH.STAGE_LABEL[st]}</span>`).join('');
+    const legendRoles = '<span><b class="l" style="background:var(--muted)"></b>creator</span><span><b class="l dash"></b>community</span><span><b class="l dot"></b>engager</span>';
+    $('view').innerHTML = `<svg id="graph" class="ring" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet"><g id="zg" transform="translate(${zoom.x} ${zoom.y}) scale(${zoom.k})">${arcs}${edges}${hb}${pn}</g></svg>
+      <div class="gtools">${modeSelect()}<select id="colorBy"><option value="cluster" ${colorBy === 'cluster' ? 'selected' : ''}>Colour: group</option><option value="valence" ${colorBy === 'valence' ? 'selected' : ''}>Colour: personality (valence)</option><option value="archetype" ${colorBy === 'archetype' ? 'selected' : ''}>Colour: archetype</option></select><select id="groupBy"><option value="category" ${groupBy !== 'country' ? 'selected' : ''}>Order by category</option><option value="country" ${groupBy === 'country' ? 'selected' : ''}>Order by country</option></select><button class="btn" id="fit">Fit</button></div>
+      <div class="legend">${legendColor ? `<div class="row">${legendColor}</div>` : ''}<div class="row">${legendStages}</div><div class="row">${legendRoles}</div></div>`;
+    wireRing();
+  }
+  function wireRing() {
+    const svg = $('graph'), zg = $('zg');
+    const apply = () => zg.setAttribute('transform', `translate(${zoom.x} ${zoom.y}) scale(${zoom.k})`);
+    const pt = (e) => { const r = svg.getBoundingClientRect(); const sc = Math.max(GV.w / r.width, GV.h / r.height); return { x: (e.clientX - r.left - (r.width - GV.w / sc) / 2) * sc, y: (e.clientY - r.top - (r.height - GV.h / sc) / 2) * sc }; };
+    svg.addEventListener('wheel', (e) => { e.preventDefault(); const q = pt(e), k = Math.min(6, Math.max(0.4, zoom.k * Math.exp(-e.deltaY * 0.0015))); zoom.x = q.x - ((q.x - zoom.x) * k) / zoom.k; zoom.y = q.y - ((q.y - zoom.y) * k) / zoom.k; zoom.k = k; apply(); }, { passive: false });
+    let drag = null;
+    svg.addEventListener('pointerdown', (e) => { if (e.target.closest('.pn, .edge, .hub')) return; drag = { p: pt(e), x: zoom.x, y: zoom.y }; svg.classList.add('panning'); svg.setPointerCapture(e.pointerId); });
+    svg.addEventListener('pointermove', (e) => { if (!drag) return; const q = pt(e); zoom.x = drag.x + q.x - drag.p.x; zoom.y = drag.y + q.y - drag.p.y; apply(); });
+    svg.addEventListener('pointerup', () => { drag = null; svg.classList.remove('panning'); });
+    const focus = (id, pl) => {
+      svg.classList.toggle('focus', !!(id || pl));
+      svg.querySelectorAll('.edge').forEach((e) => e.classList.toggle('hl', (!!id && e.dataset.p === id) || (!!pl && e.dataset.pl === pl)));
+      const on = new Set([...svg.querySelectorAll('.edge.hl')].map((e) => e.dataset.p));
+      svg.querySelectorAll('.pn').forEach((n) => n.classList.toggle('hl', on.has(n.dataset.p) || n.dataset.p === id));
+    };
+    const keep = () => (sel ? focus(sel.id, null) : focus(null, null));
+    svg.querySelectorAll('.pn').forEach((n) => { n.onmouseenter = () => focus(n.dataset.p); n.onmouseleave = keep; n.onclick = () => { sel = { kind: 'p', id: n.dataset.p }; setHash(); openSel(); }; });
+    svg.querySelectorAll('.hub').forEach((n) => { n.onmouseenter = () => focus(null, n.dataset.pl); n.onmouseleave = keep; n.onclick = () => { filter.platform = filter.platform === n.dataset.pl ? 'all' : n.dataset.pl; render(); }; });
+    svg.querySelectorAll('.edge').forEach((e) => { e.onclick = () => { sel = { kind: 'c', id: e.dataset.p, platform: e.dataset.pl }; setHash(); openSel(); }; });
+    wireCommon();
+    $('fit').onclick = () => { zoom = { k: 1, x: 0, y: 0 }; apply(); };
+    keep();
+  }
+
+  // ── table (matrix)
+  function cell(c) {
+    const dim = filter.stage !== 'all' && c.stage !== filter.stage;
+    const kpi = c.target > 0
+      ? `<div class="mini"><i style="width:${c.pct === null ? 0 : Math.min(100, c.pct * 100).toFixed(1)}%;background:${pctColor(c.pct)}"></i></div><div class="l2 num"><b>${CH.fmtNum(c.reach)}</b> / ${CH.fmtNum(c.target)} · ${CH.fmtPct(c.pct)}</div>`
+      : `<div class="l2 num">reach <b>${CH.fmtNum(c.reach)}</b></div>`;
+    const cost = c.cost !== null ? `<div class="l2 num">${esc(CH.fmtMoney(c.cost, c.currency))}${c.cpk !== null ? ` · ${esc(CH.fmtMoney(c.cpk, c.currency))}/1k` : ''}</div>` : '';
+    const net = netLine(c.network) ? `<div class="l2">${esc(netLine(c.network))}</div>` : '';
+    const plan = c.plan ? `<div class="l2 pl" title="${esc(c.plan)}">${esc(c.plan)}</div>` : '';
+    const bud = c.budget ? `<div class="l2 num"><b>${esc(CH.fmtMoney(c.budget.total, c.budget.currency))}</b>/mo${c.spentPlan ? ` · spent ${esc(CH.fmtMoney(c.spentPlan.total, c.spentPlan.currency))}` : ''}</div>` : '';
+    return `<div class="cell s-${c.stage}${dim ? ' dim' : ''}"><div class="l1">${esc(CH.STAGE_LABEL[c.stage])}<span class="rb" title="Role: ${c.role}${c.tasks.length ? ' — ' + esc(c.tasks.map((t) => `${t.type} ${t.cadence}`).join(', ')) : ''}">${ROLE_ICON[c.role]} ${c.role}</span>${c.scheduled ? `<span class="pp" title="${c.scheduled} scheduled, next ${esc(CH.fmtWhen(c.next))}">${I.cal}${c.scheduled}</span>` : ''}</div>${plan}${bud}${c.target > 0 || c.reach !== null ? kpi : ''}${cost}${net}</div>`;
+  }
+  function renderTable(ps, errs) {
+    const plats = visiblePlatforms();
+    const head = `<thead><tr><th class="pc">Persona</th><th class="mc">Country</th><th class="mc">Proxy</th><th class="mc">Valence</th><th class="mc">Archetype</th><th class="mc">Budget/mo</th>${plats.map((p) => `<th><span class="h">${CH.platformIcon(p)}${esc(CH.platformName(p))} <small class="num">${data.platformCount.get(p)}</small></span></th>`).join('')}</tr></thead>`;
+    const row = (p) => `<tr><th class="pc${sel && sel.kind === 'p' && sel.id === p.id ? ' sel' : ''}" data-p="${esc(p.id)}"><div class="who"><span class="ava">${esc(p.emoji)}</span><span class="t"><b>${esc(at(p))}</b><span>${esc([p.name !== at(p) ? p.name : '', p.niche].filter(Boolean).join(' · ') || p.category)}</span></span></div></th><td class="m">${esc(place(p) || '—')}</td><td class="m${p.proxyMismatch ? ' warn' : ''}" title="${p.proxyMismatch ? 'Exit country differs from the persona\'s country' : 'Exit country from channel network.geo'}">${esc(proxyText(p))}${p.proxyMismatch ? ' ⚠' : ''}</td><td class="m">${p.personality ? `<span class="vb" style="--vc:${VAL_COLOR[p.personality.valence] || '#888'}">${esc(p.personality.valence)}</span>` : '—'}</td><td class="m">${esc(p.personality ? p.personality.archetype : '—')}</td><td class="m num">${esc(moneyMap(p.budget))}</td>${
+      plats.map((pl) => { const c = p.cells[pl]; return c ? `<td class="c${sel && sel.kind === 'c' && sel.id === p.id && sel.platform === pl ? ' sel' : ''}" data-p="${esc(p.id)}" data-pl="${esc(pl)}" title="${esc(`${p.name} · ${CH.platformName(pl)} · ${CH.STAGE_LABEL[c.stage]}${netLine(c.network) ? ' · ' + netLine(c.network) : ''}`)}">${cell(c)}</td>` : '<td class="x"></td>'; }).join('')}</tr>`;
+    let body = '';
+    if (filter.sort === 'cat') {
+      const cats = new Map();
+      for (const p of ps) { if (!cats.has(p.category)) cats.set(p.category, []); cats.get(p.category).push(p); }
+      for (const [cat, list] of cats) body += `<tr class="cat"><td colspan="${plats.length + 6}">${esc(cat)}<span class="num">${list.length}</span></td></tr>` + list.map(row).join('');
+    } else {
+      const key = filter.sort === 'reach' ? (p) => shownChannels([p]).reduce((a, c) => a + (c.reach || 0), 0) : personaKpi;
+      const dir = filter.sort === 'kpi-asc' ? 1 : -1;
+      body = ps.slice().sort((a, b) => { const x = key(a), y = key(b); if (x === null && y === null) return 0; if (x === null) return 1; if (y === null) return -1; return dir * (x - y); }).map(row).join('');
+    }
+    const old = $('view').querySelector('.tw'); const scroll = old ? [old.scrollTop, old.scrollLeft] : [0, 0];
+    const COLW = [250, 120, 78, 96, 100, 92], CW = 172;
+    const cols = `<colgroup>${COLW.map((w) => `<col style="width:${w}px">`).join('')}${plats.map(() => `<col style="width:${CW}px">`).join('')}</colgroup>`;
+    $('view').innerHTML = `<div class="tw">${errs}<table class="mx" style="width:${COLW.reduce((a, b) => a + b, 0) + CW * plats.length}px">${cols}${head}<tbody>${body}</tbody></table></div>`;
+    const tw = $('view').querySelector('.tw'); tw.scrollTop = scroll[0]; tw.scrollLeft = scroll[1];
+    tw.addEventListener('click', (e) => {
+      const t = e.target.closest('th.pc[data-p], td.c'); if (!t) return;
+      sel = t.tagName === 'TD' ? { kind: 'c', id: t.dataset.p, platform: t.dataset.pl } : { kind: 'p', id: t.dataset.p };
+      setHash(); openSel();
+    });
+  }
+
+  // ── markdown (headings, lists, paragraphs, bold/italic/code)
+  function inline(s) { return esc(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/(^|[^*])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>'); }
+  function md(text) {
+    const lines = text.replace(/\r/g, '').split('\n'); const out = [];
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i]; let m;
+      if ((m = /^(#{1,4})\s+(.*)/.exec(l))) { out.push(`<h2>${inline(m[2])}</h2>`); continue; }
+      if (/^\s*[-*+]\s+/.test(l)) { const b = []; while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) b.push(`<li>${inline(lines[i++].replace(/^\s*[-*+]\s+/, ''))}</li>`); i--; out.push(`<ul>${b.join('')}</ul>`); continue; }
+      if (!l.trim()) continue;
+      const b = [l]; while (i + 1 < lines.length && lines[i + 1].trim() && !/^(#|\s*[-*+]\s)/.test(lines[i + 1])) b.push(lines[++i]);
+      out.push(`<p>${inline(b.join(' '))}</p>`);
+    }
+    return out.join('');
+  }
+
+  // ── push panel on the right: the view shrinks, the panel is resizable, Esc / × closes
+  const panel = $('panel'), resizer = $('resizer');
+  panel.style.width = `${store.get('channels.panelW', 440)}px`;
+  function close() {
+    sel = null; panel.hidden = true; resizer.hidden = true;
+    document.querySelectorAll('.sel').forEach((e) => e.classList.remove('sel'));
+    document.querySelectorAll('.hl').forEach((e) => e.classList.remove('hl'));
+    if ($('graph')) $('graph').classList.remove('focus');
+    if (location.hash) history.replaceState(null, '', location.pathname);
+  }
+  function show(html, keep) {
+    const scroll = keep ? (panel.querySelector('.pb') || {}).scrollTop || 0 : 0;
+    panel.innerHTML = html; panel.hidden = false; resizer.hidden = false;
+    panel.querySelector('.pb').scrollTop = scroll;
+    $('close').onclick = close;
+  }
+  resizer.addEventListener('pointerdown', (e) => {
+    resizer.setPointerCapture(e.pointerId); resizer.classList.add('drag');
+    const x0 = e.clientX, w0 = panel.getBoundingClientRect().width, max = Math.max(360, window.innerWidth * 0.7);
+    const move = (ev) => { panel.style.width = `${Math.min(max, Math.max(320, w0 + (x0 - ev.clientX)))}px`; };
+    const up = () => { resizer.classList.remove('drag'); resizer.removeEventListener('pointermove', move); store.set('channels.panelW', parseInt(panel.style.width, 10)); };
+    resizer.addEventListener('pointermove', move); resizer.addEventListener('pointerup', up, { once: true });
+  });
+  function markSel() {
+    document.querySelectorAll('.sel').forEach((e) => e.classList.remove('sel'));
+    const q = sel.kind === 'p' ? `th.pc[data-p="${CSS.escape(sel.id)}"]` : `td.c[data-p="${CSS.escape(sel.id)}"][data-pl="${CSS.escape(sel.platform)}"]`;
+    const el = document.querySelector(q); if (el) el.classList.add('sel');
+    const g = $('graph');
+    if (g) {
+      if (g.classList.contains('ring')) {
+        g.classList.add('focus');
+        g.querySelectorAll('.edge').forEach((e) => e.classList.toggle('hl', e.dataset.p === sel.id && (sel.kind === 'p' || e.dataset.pl === sel.platform)));
+      }
+      g.querySelectorAll('.pn').forEach((n) => n.classList.toggle('hl', n.dataset.p === sel.id));
+      g.querySelectorAll('.sat').forEach((n) => n.classList.toggle('hl', n.dataset.p === sel.id && sel.kind === 'c' && n.dataset.pl === sel.platform));
+    }
+  }
+  function openSel(keep) {
+    const p = data.personas.find((x) => x.id === sel.id);
+    if (!p) return close();
+    markSel();
+    if (sel.kind === 'p') personaCard(p, keep); else if (p.cells[sel.platform]) channelCard(p, p.cells[sel.platform], keep); else close();
+  }
+  const header = (p, sub, meta) => `<div class="ph"><span class="ava">${esc(p.emoji)}</span><div class="t"><b>${esc(at(p))}</b><span>${sub}</span><div class="meta">${meta || ''}</div></div><button class="ibtn" id="close" aria-label="Close">${I.close}</button></div>`;
+
+  function personaCard(p, keep) {
+    const rows = p.channels.map((c) => `<div class="rw" data-pl="${esc(c.platform)}">${CH.platformIcon(c.platform)}<div><div>${esc(CH.platformName(c.platform))}${c.handle ? ` · ${esc(c.handle)}` : ''}</div><div class="m">${ROLE_ICON[c.role]} ${esc(c.role)}${c.plan ? ' · ' + esc(c.plan) : ''}</div><div class="m num">${esc(c.budget ? CH.fmtMoney(c.budget.total, c.budget.currency) + '/mo' : 'no budget')} · reach ${CH.fmtNum(c.reach)} / ${CH.fmtNum(c.target)} · ${c.scheduled} scheduled${netLine(c.network) ? ' · ' + esc(netLine(c.network)) : ''}</div></div>${stagePill(c.stage)}</div>`).join('');
+    const story = p.story.replace(/^#\s+.*\n?/, '').trim();
+    const facts = [['Name', p.name], ['Budget / month', moneyMap(p.budget)], ['Niche', p.niche || p.category], ['Based in', place(p)], ['Proxy exit', proxyText(p) + (p.proxyMismatch ? ' ⚠ differs from home country' : '')], ['Languages', (p.languages || []).join(', ')], ['Audience', p.audience],
+      ['References', (p.references || []).map((r) => (typeof r === 'string' ? r : r.name || '')).filter(Boolean).join(', ')]].filter(([, v]) => v);
+    show(`${header(p, esc([p.name, p.niche, place(p)].filter(Boolean).join(' · ') || p.category), p.personality ? `<span class="vb" style="--vc:${VAL_COLOR[p.personality.valence] || '#888'}">${esc(p.personality.valence)}</span><span class="m">${esc(p.personality.archetype)}</span>` : '')}
+      <div class="acts"><button class="btn primary" id="discuss">${I.thread}Discuss in a thread</button>${p.folder && inApp ? `<button class="btn" id="open">${I.folder}Reveal in Finder</button>` : ''}<span class="msg" id="msg"></span></div>
+      <div class="pb">
+        ${facts.length ? `<div class="sec"><dl class="kv">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl></div>` : ''}
+        ${traitsHtml(p)}
+        <div class="sec"><h3>Channels <span class="r num">${p.channels.length}</span></h3>${rows ? `<div class="rows">${rows}</div>` : `<div class="note">No channels. Add entries to <code>channels.json</code> with <code>"persona": "${esc(p.id)}"</code>.</div>`}</div>
+        <div class="sec"><h3>Soul <span class="r">SOUL.md</span></h3><div class="story">${story ? md(story) : '—'}</div></div>
+        <div class="sec"><div class="path">${esc(root || '')}/${esc(p.folder || p.id)}/</div></div>
+      </div>`, keep);
+    panel.querySelectorAll('.rw[data-pl]').forEach((r) => { r.onclick = () => { sel = { kind: 'c', id: p.id, platform: r.dataset.pl }; setHash(); openSel(); }; });
+    if (p.folder && inApp) $('open').onclick = () => aa('fs.reveal', { path: p.folder }).catch((e) => { $('msg').textContent = e.message; });
+    $('discuss').onclick = () => discuss(p, null);
+  }
+
+  function budgetTable(b, sp) {
+    if (!b && !sp) return '<div class="note">No budget yet — set <code>budget</code> (planned per month) and <code>spent</code> in channels.json.</div>';
+    const cur = (b || sp).currency;
+    const rows = CH.BUDGET_KEYS.map((k) => `<dt><i class="sw" style="background:${BUD_COLOR[k]}"></i>${k}</dt><dd class="num">${esc(b && b.items[k] !== null ? CH.fmtMoney(b.items[k], cur) : '—')} <span class="m">/ spent ${esc(sp && sp.items[k] !== null ? CH.fmtMoney(sp.items[k], sp.currency) : '—')}</span></dd>`).join('');
+    return `<dl class="kv bud">${rows}<dt><b>Total</b></dt><dd class="num"><b>${esc(b ? CH.fmtMoney(b.total, b.currency) : '—')}</b> <span class="m">/ spent ${esc(sp ? CH.fmtMoney(sp.total, sp.currency) : '—')}</span></dd></dl>`;
+  }
+
+  function traitsHtml(p) {
+    const t = p.personality; if (!t) return '';
+    const O = [['Openness', t.openness], ['Conscientiousness', t.conscientiousness], ['Extraversion', t.extraversion], ['Agreeableness', t.agreeableness], ['Neuroticism', t.neuroticism]];
+    return `<div class="sec"><h3>Personality <span class="r">${esc(t.archetype || '')}</span></h3>
+      <div class="ocean">${O.map(([k, v]) => `<span>${k}</span><span class="t"><i style="width:${((v || 0) / 5) * 100}%"></i></span><span class="num">${v ?? '—'}</span>`).join('')}</div>
+      <dl class="kv" style="margin-top:10px"><dt>Valence</dt><dd><span class="vb" style="--vc:${VAL_COLOR[t.valence] || '#888'}">${esc(t.valence || '—')}</span></dd><dt>Humour</dt><dd>${esc(t.humor || '—')}</dd><dt>Energy</dt><dd>${esc(t.energy || '—')}</dd>${p.hypothesis ? `<dt>Hypothesis</dt><dd>${esc(p.hypothesis)}</dd>` : ''}</dl>
+      ${(t.likes || []).length ? `<div style="margin-top:10px" class="chips2">${t.likes.map((x) => `<span>♥ ${esc(x)}</span>`).join('')}</div>` : ''}
+      ${(t.dislikes || []).length ? `<div style="margin-top:6px" class="chips2 no">${t.dislikes.map((x) => `<span>${esc(x)}</span>`).join('')}</div>` : ''}</div>`;
+  }
+
+  function channelCard(p, c, keep) {
+    const posts = c.posts.map((x) => `<div class="rw post"><span class="m num">${esc(CH.fmtWhen(x))}</span><div><div>${esc(x.title || '—')}</div>${x.content ? `<div class="m">${esc(x.content.length > 90 ? x.content.slice(0, 90) + '…' : x.content)}</div>` : ''}</div><span class="m">${esc(x.status)}</span></div>`).join('');
+    const n = c.network;
+    show(`${header(p, `${esc(CH.platformName(c.platform))} · ${esc([p.niche, place(p)].filter(Boolean).join(' · '))}`, stagePill(c.stage))}
+      <div class="acts"><button class="btn primary" id="discuss">${I.thread}Discuss in a thread</button><button class="btn" id="persona">Persona</button><span class="msg" id="msg"></span></div>
+      <div class="pb">
+        <div class="sec"><h3>Plan</h3><div class="desc">${esc(c.plan || '— (no plan yet)')}</div></div>
+        <div class="sec"><h3>Budget / month <span class="r">planned vs spent</span></h3>${budgetTable(c.budget, c.spentPlan)}</div>
+        <div class="sec"><h3>KPI · reach, 30 days</h3>
+          <div class="stats num">
+            <div><div class="k">Reach</div><div class="v">${CH.fmtNum(c.reach)}</div></div>
+            <div><div class="k">Target</div><div class="v">${CH.fmtNum(c.target)}</div></div>
+            <div><div class="k">% of KPI</div><div class="v" style="color:${pctColor(c.pct)}">${CH.fmtPct(c.pct)}</div></div>
+            <div><div class="k">Cost</div><div class="v">${esc(c.cost === null ? '—' : CH.fmtMoney(c.cost, c.currency))}</div></div>
+          </div>
+          <div class="bar" style="margin-top:10px"><i style="width:${c.pct === null ? 0 : Math.min(100, c.pct * 100).toFixed(1)}%;background:${pctColor(c.pct)}"></i></div>
+          <div class="note" style="margin-top:10px">Metric: ${esc(c.kpiMetric)}${c.cpk !== null ? ` · ${esc(CH.fmtMoney(c.cpk, c.currency))} per 1k reach` : ''}${c.followers !== null ? ` · ${CH.fmtNum(c.followers)} followers` : ''}${c.lastMetric ? ` · last row ${esc(c.lastMetric)}` : ' · no metrics yet'}</div></div>
+        <div class="sec"><h3>Account</h3><dl class="kv">
+          <dt>Stage</dt><dd>${stagePill(c.stage)}</dd>
+          <dt>Role</dt><dd>${ROLE_ICON[c.role]} ${esc(c.role)}</dd>
+          <dt>Tasks</dt><dd>${c.tasks.length ? `<ul class="tasks">${c.tasks.map((t) => `<li><b>${esc(t.type)}</b> · ${esc(t.cadence || '—')}${t.notes ? ` — ${esc(t.notes)}` : ''}</li>`).join('')}</ul>` : '—'}</dd>
+          <dt>Handle</dt><dd>${esc(c.handle || '— (not registered yet)')}</dd>
+          <dt>Profile URL</dt><dd>${esc(n.url || '—')}</dd>
+          <dt>MCP</dt><dd>${esc(c.mcp || '— (not connected)')}</dd>
+          <dt>Notes</dt><dd>${esc(c.notes || '—')}</dd></dl></div>
+        <div class="sec"><h3>Network <span class="r">where it connects from → to</span></h3><dl class="kv">
+          <dt>Egress</dt><dd>${esc(n.egress || '—')}</dd>
+          <dt>Exit IP</dt><dd>${esc(n.ip || '—')}</dd>
+          <dt>Geo</dt><dd>${esc(n.geo || '—')}</dd>
+          <dt>Device profile</dt><dd>${esc(n.device || '—')}</dd>
+          <dt>Connects to</dt><dd>${esc(n.url ? shortUrl(n.url) : CH.platformName(c.platform))}</dd></dl></div>
+        <div class="sec"><h3>Posts <span class="r num">${c.scheduled} scheduled · next ${esc(CH.fmtWhen(c.next))}</span></h3>${posts ? `<div class="rows">${posts}</div>` : '<div class="note">No posts yet. Agents add them to <code>posts.json</code>.</div>'}</div>
+        <div class="sec"><div class="path">${esc(root || '')}/channels.json · metrics.csv · posts.json</div></div>
+      </div>`, keep);
+    $('persona').onclick = () => { sel = { kind: 'p', id: p.id }; setHash(); openSel(); };
+    $('discuss').onclick = () => discuss(p, c);
+  }
+
+  async function discuss(p, c) {
+    const btn = $('discuss'), msg = (t) => { $('msg').textContent = t; };
+    btn.disabled = true; msg('Opening a thread…');
+    const ch = (x) => `${CH.platformName(x.platform)}: role ${x.role} (${x.tasks.map((t) => `${t.type} ${t.cadence}`).join(', ') || 'no tasks'}), stage ${x.stage}, handle ${x.handle || '—'}, MCP ${x.mcp || '—'}, reach ${CH.fmtNum(x.reach)} / target ${CH.fmtNum(x.target)} (${x.kpiMetric}), cost ${x.cost === null ? '—' : CH.fmtMoney(x.cost, x.currency)}, ${x.scheduled} scheduled posts, network ${netLine(x.network) || '—'}`;
+    const lines = [
+      c ? `Let's work on ${at(p)} (${p.name})'s ${CH.platformName(c.platform)} channel (role: ${c.role}) (${[p.niche, place(p)].filter(Boolean).join(', ')}).` : `Let's work on the persona ${at(p)} — ${p.name} (${[p.niche, place(p)].filter(Boolean).join(', ')}).`,
+      ...(c ? [ch(c)] : p.channels.map(ch)),
+      `Persona: ${root}/${p.folder || p.id}/SOUL.md and config.json. Channels: ${root}/channels.json. Metrics: ${root}/metrics.csv. Posts: ${root}/posts.json. Format: ${root}/SCHEMA.md.`,
+      '',
+      c && c.plan ? `Plan: ${c.plan}. Budget/mo: ${c.budget ? CH.fmtMoney(c.budget.total, c.budget.currency) : '—'}, spent: ${c.spentPlan ? CH.fmtMoney(c.spentPlan.total, c.spentPlan.currency) : '—'}.` : null,
+      c ? 'Help move this channel to its next stage and toward its reach target. Record changes in channels.json / metrics.csv / posts.json per SCHEMA.md (rewrite the whole file via a temp file).'
+        : 'Help plan the launch: which channels to set up first, reach targets, first posts. Record changes in channels.json / posts.json per SCHEMA.md.',
+    ].filter((l) => l !== null);
+    if (!inApp) {
+      try { await navigator.clipboard.writeText(lines.join('\n')); msg('Prompt copied — paste it into an AgentArea thread'); } catch { msg('Open inside AgentArea to start a thread'); }
+      btn.disabled = false; return;
+    }
+    try {
+      const { id } = await aa('threads.create');
+      for (const f of [p.folder ? `${p.folder}/SOUL.md` : null, p.folder ? `${p.folder}/config.json` : null, 'channels.json', 'SCHEMA.md'].filter(Boolean)) await aa('threads.attach', { path: f, threadId: id }).catch(() => {});
+      await aa('threads.send', { threadId: id, text: lines.join('\n') });
+      msg('Sent to a new thread ✓');
+    } catch (err) { msg(err.message); }
+    btn.disabled = false;
+  }
+
+  // ── events
+  function setHash() { history.replaceState(null, '', sel.kind === 'p' ? `#p=${encodeURIComponent(sel.id)}` : `#c=${encodeURIComponent(sel.id)}:${encodeURIComponent(sel.platform)}`); }
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && sel) close(); });
+  $('viewSeg').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; view = b.dataset.v; store.set('channels.view2', view); render(); if (sel) markSel(); };
+  $('q').oninput = () => { filter.q = $('q').value.trim().toLowerCase(); render(); };
+  $('fStage').onchange = () => { filter.stage = $('fStage').value; render(); };
+  $('fPlat').onchange = () => { filter.platform = $('fPlat').value; render(); };
+  $('fCat').onchange = () => { filter.cat = $('fCat').value; render(); };
+  $('fCountry').onchange = () => { filter.country = $('fCountry').value; render(); };
+  $('fVal').onchange = () => { filter.val = $('fVal').value; render(); };
+  $('fArch').onchange = () => { filter.arch = $('fArch').value; render(); };
+  $('fRole').onchange = () => { filter.role = $('fRole').value; render(); };
+  $('fSort').onchange = () => { filter.sort = $('fSort').value; render(); };
+  $('refresh').onclick = () => refresh(true);
+  $('reveal').onclick = () => aa('fs.reveal', { path: '' }).catch((e) => { $('upd').textContent = e.message; });
+  function fromHash() {
+    const h = decodeURIComponent(location.hash.slice(1)); let m;
+    if ((m = /^p=(.+)$/.exec(h))) { sel = { kind: 'p', id: m[1] }; openSel(); }
+    else if ((m = /^c=([^:]+):(.+)$/.exec(h))) { sel = { kind: 'c', id: m[1], platform: m[2] }; openSel(); }
+    else if ((m = /^stage=(.+)$/.exec(h)) && CH.STAGES.includes(m[1])) { filter.stage = m[1]; render(); }
+  }
+  window.addEventListener('hashchange', fromHash);
+  setInterval(() => { if (!document.hidden) refresh(); }, 4000);
+  setInterval(tick, 1000);
+  window.addEventListener('focus', () => refresh());
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+  refresh(true).then(fromHash);
+</script>
+</body>
+</html>
