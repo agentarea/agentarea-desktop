@@ -9,6 +9,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
+use base64::Engine;
 use serde::{Deserialize, Serialize};
 use tauri::http::{Request, Response, StatusCode};
 use tauri::{Runtime, UriSchemeContext, UriSchemeResponder};
@@ -36,6 +37,9 @@ pub struct Plugin {
     /// library, else "a/b/"); `wiki/` until the user changes it.
     #[serde(rename = "cloudRoot")]
     cloud_root: Option<String>,
+    /// Sidebar glyph: a lucide icon name ("radio-tower"), or the plugin's own
+    /// monochrome SVG as a `data:` URL the app renders as a CSS mask.
+    icon: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -47,6 +51,38 @@ struct Manifest {
     sidebar: Option<String>,
     #[serde(default)]
     permissions: Vec<String>,
+    icon: Option<String>,
+}
+
+/// Largest SVG icon a plugin may ship.
+const ICON_MAX_BYTES: u64 = 16 * 1024;
+
+/// A manifest `icon`: a lucide name (lowercase words joined by "-") or a
+/// relative `.svg` path inside the plugin folder. Anything else is ignored.
+fn icon_spec(icon: &str) -> Option<String> {
+    let icon = icon.trim();
+    if icon.to_ascii_lowercase().ends_with(".svg") {
+        return safe_relative(icon).map(|_| icon.to_string());
+    }
+    let lucide = icon.len() <= 48
+        && icon.starts_with(|c: char| c.is_ascii_lowercase())
+        && icon.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    lucide.then(|| icon.to_string())
+}
+
+/// The plugin's SVG icon as a `data:` URL: a small file that stays inside the
+/// plugin folder (symlinks included). Rendered only as an image mask, so any
+/// script or external reference in it never runs or loads.
+fn svg_icon(plugin_dir: &Path, rel: &str) -> Option<String> {
+    let base = plugin_dir.canonicalize().ok()?;
+    let file = base.join(safe_relative(rel)?).canonicalize().ok()?;
+    let meta = std::fs::metadata(&file).ok()?;
+    if !file.starts_with(&base) || !meta.is_file() || meta.len() > ICON_MAX_BYTES {
+        return None;
+    }
+    let svg = std::fs::read_to_string(&file).ok()?;
+    svg.contains("<svg")
+        .then(|| format!("data:image/svg+xml;base64,{}", base64::engine::general_purpose::STANDARD.encode(svg)))
 }
 
 fn plugins_dir() -> Result<PathBuf, String> {
@@ -304,6 +340,7 @@ fn parse_manifest(folder: &str, json: &str) -> Option<Plugin> {
         permissions: m.permissions,
         root: None,
         cloud_root: None,
+        icon: m.icon.as_deref().and_then(icon_spec),
     })
 }
 
@@ -315,7 +352,16 @@ fn scan(dir: &Path) -> Vec<Plugin> {
         .filter_map(|e| {
             let folder = e.file_name().into_string().ok()?;
             let json = std::fs::read_to_string(e.path().join("plugin.json")).ok()?;
-            parse_manifest(&folder, &json)
+            let mut plugin = parse_manifest(&folder, &json)?;
+            // A path icon becomes the file's contents; one that fails the checks is dropped.
+            if let Some(rel) = plugin.icon.take() {
+                plugin.icon = if rel.to_ascii_lowercase().ends_with(".svg") {
+                    svg_icon(&e.path(), &rel)
+                } else {
+                    Some(rel)
+                };
+            }
+            Some(plugin)
         })
         .collect();
     plugins.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
@@ -449,7 +495,8 @@ const SEED_MANIFEST: &str = r#"{
   "id": "threads-board",
   "title": "Threads board",
   "description": "Example plugin: every thread at a glance, with a quick-send box.",
-  "entry": "index.html"
+  "entry": "index.html",
+  "icon": "square-kanban"
 }
 "#;
 
@@ -576,6 +623,7 @@ mod tests {
             permissions: vec![],
             root: None,
             cloud_root: None,
+            icon: None,
         });
         let p = parse_manifest("demo", r#"{"id":"demo","title":"D","description":"x","entry":"app/main.html"}"#).unwrap();
         assert_eq!(p.entry, "app/main.html");
@@ -587,6 +635,45 @@ mod tests {
         assert!(parse_manifest("demo", r#"{"id":"demo","title":"D","entry":"/etc/passwd"}"#).is_none());
         assert!(parse_manifest("a b", r#"{"id":"a b","title":"D"}"#).is_none());
         assert!(parse_manifest("demo", "not json").is_none());
+    }
+
+    #[test]
+    fn parses_icons() {
+        let icon = |v: &str| parse_manifest("demo", &format!(r#"{{"id":"demo","title":"D","icon":{v}}}"#)).unwrap().icon;
+        assert_eq!(icon(r#""radio-tower""#).as_deref(), Some("radio-tower"));
+        assert_eq!(icon(r#""icons/glyph.svg""#).as_deref(), Some("icons/glyph.svg"));
+        for bad in [r#""../x.svg""#, r#""/etc/x.svg""#, r#""icon.png""#, r#""Radio Tower""#, r#""a/b""#, r#""""#, "null"] {
+            assert_eq!(icon(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn loads_svg_icons_inside_the_plugin_only() {
+        let root = temp_root("icons");
+        let demo = root.join("demo");
+        std::fs::write(demo.join("glyph.svg"), r#"<svg viewBox="0 0 16 16"><path d="M1 1h14"/></svg>"#).unwrap();
+        std::fs::write(demo.join("big.svg"), format!("<svg>{}</svg>", " ".repeat(20_000))).unwrap();
+        std::fs::write(demo.join("fake.svg"), "not an image").unwrap();
+        std::fs::write(root.join("outside.svg"), "<svg/>").unwrap();
+        let url = svg_icon(&demo, "glyph.svg").unwrap();
+        assert!(url.starts_with("data:image/svg+xml;base64,"));
+        assert_eq!(svg_icon(&demo, "big.svg"), None, "size cap");
+        assert_eq!(svg_icon(&demo, "fake.svg"), None, "not an svg");
+        assert_eq!(svg_icon(&demo, "missing.svg"), None);
+        assert_eq!(svg_icon(&demo, "../outside.svg"), None, "traversal");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(root.join("outside.svg"), demo.join("link.svg")).unwrap();
+            assert_eq!(svg_icon(&demo, "link.svg"), None, "symlink escape");
+        }
+
+        std::fs::write(demo.join("plugin.json"), r#"{"id":"demo","title":"Demo","icon":"glyph.svg"}"#).unwrap();
+        assert_eq!(scan(&root)[0].icon.as_deref(), Some(url.as_str()));
+        std::fs::write(demo.join("plugin.json"), r#"{"id":"demo","title":"Demo","icon":"big.svg"}"#).unwrap();
+        assert_eq!(scan(&root)[0].icon, None, "a failed icon falls back to none");
+        std::fs::write(demo.join("plugin.json"), r#"{"id":"demo","title":"Demo","icon":"kanban"}"#).unwrap();
+        assert_eq!(scan(&root)[0].icon.as_deref(), Some("kanban"));
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

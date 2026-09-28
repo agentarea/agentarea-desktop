@@ -29,6 +29,9 @@ export interface Plugin {
   root: string | null;
   /** workspace-files prefix for "cloud" plugins: "" or "a/b/" (default "wiki/") */
   cloudRoot: string | null;
+  /** plugin.json `icon`: a lucide name ("radio-tower"), or the plugin's own SVG as a
+   *  `data:` URL (validated and size-capped in Rust); null = initials badge */
+  icon: string | null;
 }
 
 /**

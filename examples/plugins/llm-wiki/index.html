@@ -10,7 +10,7 @@
           --local:#b5b5b5; --local-bg:#2c2c2c; --cloud:#7aa7ff; --cloud-bg:rgba(59,130,246,.18); } }
   html, body { margin:0; background:transparent; color:var(--fg); font:15px/1.65 -apple-system, system-ui, sans-serif; }
   header { position:sticky; top:0; display:flex; align-items:center; gap:10px; padding:10px 28px; border-bottom:1px solid var(--line); background:inherit; backdrop-filter:blur(8px); font-size:12.5px; color:var(--muted); }
-  header .path { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  header .sp { flex:1; }
   .badge { display:inline-flex; align-items:center; gap:4px; flex:none; font-size:11px; font-weight:600; padding:2px 8px 2px 6px; border-radius:999px; }
   .badge svg { width:12px; height:12px; }
   .badge.local { color:var(--local); background:var(--local-bg); }
@@ -32,12 +32,12 @@
 </style>
 </head>
 <body>
-<header><span class="badge" id="badge" hidden></span><span class="path" id="path">Context</span><button id="attach" hidden>Attach to thread</button></header>
+<header id="head"><span class="badge" id="badge" hidden></span><span class="sp"></span><button id="attach" hidden>Attach to thread</button></header>
 <main id="doc"><div class="empty">Pick a page in the sidebar.</div></main>
 <script src="bridge.js"></script>
 <script>
   const doc = document.getElementById('doc');
-  const pathEl = document.getElementById('path');
+  const head = document.getElementById('head');
   const badge = document.getElementById('badge');
   const attach = document.getElementById('attach');
   const ICON = {
@@ -128,18 +128,18 @@
       badge.innerHTML = `${ICON.cloud}<span></span>`;
       badge.lastChild.textContent = ws ? `Cloud · ${ws}` : 'Cloud';
       badge.title = 'AgentArea workspace file';
-      pathEl.textContent = (cloudInfo ? cloudInfo.root : '') + current;
+      head.title = (cloudInfo ? cloudInfo.root : '') + current;
     } else {
       badge.innerHTML = `${ICON.local}<span>Local</span>`;
       badge.title = 'File on this device';
-      pathEl.textContent = current;
+      head.title = current;
     }
   }
 
   async function show(where) {
     src = where.src;
     current = where.path;
-    pathEl.textContent = current || 'Context';
+    head.title = current;
     attach.hidden = !current;
     await showBadge();
     if (!current) { doc.innerHTML = '<div class="empty">Pick a page in the sidebar.</div>'; return; }

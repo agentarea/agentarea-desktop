@@ -51,8 +51,6 @@
   .folder .fic svg { width:15px; height:15px; }
   .folder .ftext { flex:1; min-width:0; line-height:1.25; }
   .folder .fname { font-weight:560; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .folder .fpath { font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl; text-align:left; }
-  .folder .fpath bdi { direction:ltr; unicode-bidi:isolate; }
   .ibtn { flex:none; display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border:0; padding:0; border-radius:5px; background:transparent; color:var(--muted); cursor:pointer; }
   .ibtn:hover { background:var(--hover); color:var(--fg); }
   .ibtn svg { width:14px; height:14px; }
@@ -141,7 +139,7 @@
 
   async function pickLocal() { await aa('fs.pickRoot'); SRC.local.children.clear(); render(); }
 
-  // Header: the granted folder — name, full path on hover, change / reveal.
+  // Header: the granted folder — its name only (full path on hover), change / reveal.
   const folderEl = document.getElementById('folder');
   const tilde = (p) => p.replace(/^\/Users\/[^/]+(?=\/|$)/, '~');
   function renderFolder(root) {
@@ -151,11 +149,8 @@
     const name = el('div', 'fname');
     name.textContent = root ? basename(root) : 'No local folder';
     text.appendChild(name);
-    const sub = el('div', 'fpath', '<bdi></bdi>');
-    sub.firstChild.textContent = root ? tilde(root) : 'Agents see only the cloud files';
-    text.appendChild(sub);
     folderEl.appendChild(text);
-    folderEl.title = root ? `Context folder: ${root}` : 'No local folder granted yet';
+    folderEl.title = root ? `Context folder: ${tilde(root)}` : 'No local folder yet — agents see only the cloud files';
     const btn = (icon, label, fn) => {
       const b = el('button', 'ibtn', ICON[icon]);
       b.title = label; b.setAttribute('aria-label', label);

@@ -11,9 +11,16 @@ import {
   KeyRound,
   LayoutGrid,
   Pencil,
+  PanelLeft,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { LoginScreen } from '@/components/LoginScreen';
@@ -38,6 +45,10 @@ import { useAppStore } from '@/store';
 export default function App() {
   const theme = useAppStore((s) => s.settings.theme);
   const authStatus = useAppStore((s) => s.auth.status);
+  // On the root too: menus and tooltips are portalled outside the app's div.
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', theme === 'dark');
+  }, [theme]);
 
   return (
     <div className={cn('h-full', theme === 'dark' && 'dark')}>
@@ -51,6 +62,10 @@ export default function App() {
 /** 'plugin-page': a page a plugin opened (ui.open), full-width; not persisted. */
 type ViewMode = 'threads' | 'inbox' | 'apps' | 'plugins' | 'secrets' | 'plugin-page' | 'app-page';
 const VIEW_KEY = 'aa.view';
+/** the left column (workspace rail + sidebar): 'open' or 'closed' (⌘B) */
+const NAV_KEY = 'aa.sidebar';
+const SIDEBAR_WIDTH = 260;
+const RAIL_WIDTH = 60;
 
 function load<T>(key: string, valid: readonly T[], fallback: T): T {
   try {
@@ -91,6 +106,10 @@ function Workspace() {
   const soleTitle = useContentTitle(sole?.content ?? null);
   const groupOpen = useGroups((s) => !!s.activeId);
   const overId = useDragDropTarget(selected?.id ?? null);
+  const [nav, setNav] = usePersisted<'open' | 'closed'>(NAV_KEY, ['open', 'closed'], 'open');
+  const navOpen = nav === 'open';
+  const toggleNav = () => setNav(navOpen ? 'closed' : 'open');
+  const railShown = useAppStore((s) => s.workspaces.length > 1);
 
   // Whatever gets selected (sidebar click, new thread, inbox, plugin) lands in
   // the focused pane, or focuses the pane already showing it.
@@ -222,6 +241,7 @@ function Workspace() {
       if (view === 'threads') usePanes.getState().toggleMaximize();
     },
     escape: () => maximized && usePanes.getState().toggleMaximize(),
+    toggleSidebar: toggleNav,
     // ⌘S: name the split as a group (an open group already saves itself).
     saveGroup: () => {
       const g = useGroups.getState();
@@ -242,15 +262,24 @@ function Workspace() {
 
   return (
     <div className="flex h-full bg-background text-foreground">
-      <WorkspaceRail />
-      <Sidebar
-        view={view}
-        openIds={openIds}
-        onChangeView={setView}
-        onOpenThread={openThread}
-        onNewThread={newThread}
-        onOpenGroup={openGroup}
-      />
+      {/* Rail and sidebar fold away together (⌘B), like Codex: one navigation
+          column, and the content gets the whole window. */}
+      <div
+        inert={!navOpen}
+        style={{ width: navOpen ? SIDEBAR_WIDTH + (railShown ? RAIL_WIDTH : 0) : 0 }}
+        className="flex shrink-0 overflow-hidden transition-[width] duration-200 ease-out motion-reduce:transition-none"
+      >
+        <WorkspaceRail />
+        <Sidebar
+          view={view}
+          openIds={openIds}
+          onChangeView={setView}
+          onOpenThread={openThread}
+          onNewThread={newThread}
+          onOpenGroup={openGroup}
+        />
+      </div>
+      <SidebarToggle open={navOpen} onToggle={toggleNav} />
       <main className="flex min-w-0 flex-1 flex-col bg-background">
         <MainHeader
           title={
@@ -275,6 +304,7 @@ function Workspace() {
                   : undefined
           }
           maximized={view === 'threads' && maximized !== null}
+          navOpen={navOpen}
           group={view === 'threads' && (groupOpen || split) ? <GroupBar canSave={paneList.length > 1} /> : undefined}
         />
         {view === 'threads' && <SplitView overId={overId} />}
@@ -302,16 +332,63 @@ function Workspace() {
   );
 }
 
-/** a pane enlarged from a split (`maximized`): Esc / ⌘↵ goes back */
-function MainHeader({ title, maximized, group }: { title?: string; maximized: boolean; group?: ReactNode }) {
+/**
+ * Shows or hides the left column (⌘B). Fixed beside the macOS traffic lights,
+ * so it stays put: over the sidebar's drag strip when open, over the main
+ * header when closed. Its own element, so a click never starts a window drag.
+ */
+function SidebarToggle({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  const label = open ? 'Hide sidebar' : 'Show sidebar';
   return (
-    <div data-tauri-drag-region className="relative flex h-[52px] shrink-0 items-center justify-center px-20">
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            onClick={onToggle}
+            aria-label={label}
+            aria-expanded={open}
+            className="fixed top-[3px] left-[76px] z-40 flex size-[22px] items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-foreground/[0.07] hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+          >
+            <PanelLeft className="size-[15px]" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">
+          {label}
+          <span className="ml-1.5 opacity-60">⌘B</span>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+/** a pane enlarged from a split (`maximized`): Esc / ⌘↵ goes back */
+function MainHeader({
+  title,
+  maximized,
+  navOpen,
+  group,
+}: {
+  title?: string;
+  maximized: boolean;
+  /** closed: the traffic lights and sidebar toggle sit over this header's left end */
+  navOpen: boolean;
+  group?: ReactNode;
+}) {
+  return (
+    <div
+      data-tauri-drag-region
+      className={cn(
+        'relative flex h-[52px] shrink-0 items-center justify-center transition-[padding] duration-200',
+        navOpen ? 'px-20' : 'px-28',
+      )}
+    >
       {group || (
         <>
           {title && <span className="truncate text-[13px] font-medium text-foreground/80">{title}</span>}
           {maximized && <span className="ml-2 shrink-0 text-[11px] text-muted-foreground-subtle">Esc to go back</span>}
         </>
       )}
+      <AccountMenu />
     </div>
   );
 }
@@ -400,7 +477,7 @@ function GroupBar({ canSave }: { canSave: boolean }) {
         </div>
         <button
           onClick={() => g.close()}
-          className="absolute right-3 rounded-md px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          className="absolute right-12 rounded-md px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
           Close group
         </button>
@@ -424,7 +501,7 @@ function GroupBar({ canSave }: { canSave: boolean }) {
   return (
     <button
       onClick={() => g.setNaming(true)}
-      className="absolute right-3 flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      className="absolute right-12 flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
     >
       <LayoutGrid className="size-3.5" />
       Save group
@@ -437,7 +514,7 @@ function GroupBar({ canSave }: { canSave: boolean }) {
  * Window-level shortcuts: ⌘T new thread in the focused pane, ⌘\ split it
  * with a new thread, ⌘W close the focused pane, ⌘1–⌘4 focus pane N, ⌘[ / ⌘]
  * previous/next pane, ⌘↵ maximize/restore the focused pane, ⌘S save the
- * split as a group, Esc restore,
+ * split as a group, ⌘B show/hide the sidebar, Esc restore,
  * ⌃1–⌃9 workspaces. Handlers are read from a ref so the listener is
  * registered once.
  */
@@ -449,6 +526,7 @@ function useHotkeys(h: {
   toggleMaximize: () => void;
   escape: () => void;
   saveGroup: () => void;
+  toggleSidebar: () => void;
   step: (dir: 1 | -1) => void;
 }) {
   const ref = useRef(h);
@@ -479,6 +557,10 @@ function useHotkeys(h: {
       } else if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === 's') {
         e.preventDefault();
         ref.current.saveGroup();
+      } else if (e.metaKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'b') {
+        // ⌘ only: ⌃B moves the caret back in macOS text fields.
+        e.preventDefault();
+        ref.current.toggleSidebar();
       } else if (mod && e.key === 'Enter') {
         e.preventDefault();
         ref.current.toggleMaximize();
@@ -611,7 +693,7 @@ function Sidebar({
   }, [hasPinned, hasGroups, pluginById, hidden, savedOrder]);
 
   return (
-    <aside data-sidebar className="flex w-[260px] shrink-0 flex-col bg-sidebar text-sidebar-foreground">
+    <aside data-sidebar style={{ width: SIDEBAR_WIDTH }} className="flex shrink-0 flex-col bg-sidebar text-sidebar-foreground">
       {/* Drag handle — macOS traffic lights float over this strip (see hiddenTitle/titleBarStyle in tauri.conf.json). */}
       <div data-tauri-drag-region className="h-[52px] shrink-0 pl-20" />
 
@@ -668,8 +750,6 @@ function Sidebar({
         </SectionOrder.Provider>
       </ScrollArea>
       <SidebarDragLayer />
-
-      <SidebarFooter />
     </aside>
   );
 }
@@ -893,64 +973,72 @@ function SidebarNavItem({
   );
 }
 
-/** Quiet status row: connection + environment, theme toggle, sign out. No heavy top bar. */
-function SidebarFooter() {
+const CONNECTION = {
+  connected: { dot: 'bg-status-success', label: 'Connected' },
+  connecting: { dot: 'bg-chart-2', label: 'Connecting…' },
+  offline: { dot: 'bg-destructive', label: 'Offline' },
+} as const;
+
+/** "ada.lovelace@x.io" → "AL", "you@x.io" → "Y" */
+function emailInitials(email: string | undefined): string {
+  const parts = (email ?? '').split('@')[0].split(/[._+-]+/).filter(Boolean);
+  return ((parts[0]?.[0] ?? '?') + (parts[1]?.[0] ?? '')).toUpperCase();
+}
+
+/**
+ * The account, top right: theme, environment and connection, sign out. The
+ * connection shows on the avatar only when something is wrong.
+ */
+function AccountMenu() {
   const theme = useAppStore((s) => s.settings.theme);
   const toggleTheme = useAppStore((s) => s.toggleTheme);
   const logout = useAppStore((s) => s.logout);
   const email = useAppStore((s) => s.auth.user?.email);
-
-  return (
-    <div className="flex shrink-0 items-center justify-between gap-1 border-t border-sidebar-border px-2 py-1.5">
-      <ConnectionPill />
-      <div className="flex shrink-0 items-center gap-0.5">
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-6 text-muted-foreground hover:text-foreground"
-          onClick={toggleTheme}
-        >
-          {theme === 'dark' ? <Moon className="size-3.5" /> : <Sun className="size-3.5" />}
-        </Button>
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-6 text-muted-foreground hover:text-foreground"
-                onClick={logout}
-              >
-                <LogOut className="size-3.5" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="top">{email ? `Sign out ${email}` : 'Sign out'}</TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-      </div>
-    </div>
-  );
-}
-
-function ConnectionPill() {
   const status = useAppStore((s) => s.connection);
   const envLabel = useAppStore((s) => s.env.label);
-  const meta = {
-    connected: { dot: 'bg-status-success', label: 'Connected', ping: false },
-    connecting: { dot: 'bg-chart-2', label: 'Connecting…', ping: true },
-    offline: { dot: 'bg-destructive', label: 'Offline', ping: false },
-  }[status];
+  const conn = CONNECTION[status];
+  const problem = status !== 'connected';
   return (
-    <div className="flex min-w-0 items-center gap-1.5 px-1 text-[11px] text-muted-foreground">
-      <span className="relative flex size-1.5 shrink-0">
-        {meta.ping && (
-          <span className={cn('absolute inline-flex size-full animate-ping rounded-full opacity-60', meta.dot)} />
-        )}
-        <span className={cn('relative inline-flex size-1.5 rounded-full', meta.dot)} />
-      </span>
-      <span className="truncate">
-        {envLabel} · {meta.label}
-      </span>
-    </div>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          aria-label={problem ? `Account — ${conn.label}` : 'Account'}
+          title={problem ? `${envLabel} · ${conn.label}` : (email ?? 'Account')}
+          className="absolute right-3 flex size-7 items-center justify-center rounded-full bg-foreground/[0.07] text-[11px] font-semibold text-foreground/70 outline-none transition-colors hover:bg-foreground/[0.11] focus-visible:ring-2 focus-visible:ring-ring/50 hover:text-foreground data-[state=open]:bg-foreground/[0.13]"
+        >
+          {emailInitials(email)}
+          {problem && (
+            <span className={cn('absolute -right-px -bottom-px size-2.5 rounded-full ring-2 ring-background', conn.dot)} />
+          )}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" sideOffset={6} className="w-60">
+        <div className="flex flex-col gap-1 px-2 py-1.5">
+          {email && <span className="truncate text-[13px] font-medium text-foreground">{email}</span>}
+          <span className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted-foreground">
+            <span className={cn('size-1.5 shrink-0 rounded-full', conn.dot, status === 'connecting' && 'animate-pulse')} />
+            <span className="truncate">
+              {envLabel} · {conn.label}
+            </span>
+          </span>
+        </div>
+        <DropdownMenuSeparator />
+        {/* Stays open: the flip is the feedback. */}
+        <DropdownMenuItem
+          onSelect={(e) => {
+            e.preventDefault();
+            toggleTheme();
+          }}
+        >
+          {theme === 'dark' ? <Sun /> : <Moon />}
+          {theme === 'dark' ? 'Light mode' : 'Dark mode'}
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={logout}>
+          <LogOut />
+          Sign out
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

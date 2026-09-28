@@ -7,5 +7,6 @@
   "permissions": [
     "fs",
     "cloud"
-  ]
+  ],
+  "icon": "library"
 }

@@ -12,6 +12,7 @@ import { AppView } from '@/components/AppView';
 import type { AppRef } from '@/lib/pinnedApps';
 import { startPaneDrag } from './SplitView';
 import { PluginFrame } from '@/components/PluginFrame';
+import { PluginIcon } from '@/components/PluginIcon';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -59,6 +60,8 @@ interface ListItem {
   muted?: boolean;
   /** control shown at the row's right edge */
   trailing?: React.ReactNode;
+  /** glyph before the title */
+  icon?: React.ReactNode;
 }
 
 /** Shared two-pane shell: item list with a refresh button, content beside it. */
@@ -107,10 +110,13 @@ function ListPane({
                 <button
                   type="button"
                   onClick={() => onSelect(item.key)}
-                  className={cn('flex min-w-0 flex-1 cursor-pointer flex-col px-2.5 py-2 text-left', item.muted && 'opacity-50')}
+                  className={cn('flex min-w-0 flex-1 cursor-pointer items-start gap-2.5 px-2.5 py-2 text-left', item.muted && 'opacity-50')}
                 >
-                  <span className="truncate text-sm">{item.title}</span>
-                  {item.subtitle && <span className="truncate text-xs text-muted-foreground">{item.subtitle}</span>}
+                  {item.icon && <span className="mt-0.5 flex shrink-0">{item.icon}</span>}
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate text-sm">{item.title}</span>
+                    {item.subtitle && <span className="truncate text-xs text-muted-foreground">{item.subtitle}</span>}
+                  </span>
                 </button>
                 {item.trailing}
               </div>
@@ -577,6 +583,7 @@ export function PluginsPanel() {
         key: p.id,
         title: p.title,
         subtitle: p.description,
+        icon: <PluginIcon plugin={p} className="size-[15px] text-muted-foreground" />,
         muted: !p.enabled,
         trailing: (
           <>

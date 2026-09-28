@@ -28,7 +28,6 @@
 
   .top { flex:none; display:flex; align-items:center; gap:10px; padding:10px 16px; border-bottom:1px solid var(--line); }
   .top h1 { margin:0; font-size:15px; font-weight:600; }
-  .top .where { color:var(--subtle); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
   .top .sp { flex:1; }
   .top .upd { color:var(--subtle); font-size:11.5px; white-space:nowrap; }
   .seg { display:inline-flex; gap:2px; padding:2px; border:1px solid var(--line); border-radius:9px; background:var(--soft); }
@@ -212,8 +211,7 @@
 </head>
 <body>
 <div class="top">
-  <h1>Channels</h1>
-  <span class="where" id="where"></span>
+  <h1 id="title">Channels</h1>
   <div class="seg" id="viewSeg"><button data-v="table" class="on">Table</button><button data-v="graph">Graph</button></div>
   <span class="sp"></span>
   <span class="upd" id="upd"></span>
@@ -298,7 +296,7 @@
     try {
       if (!root) {
         root = inApp ? (await aa('fs.root')).path : decodeURIComponent(location.pathname.replace(/\/[^/]*$/, '')) || '.';
-        $('where').textContent = root ? root.replace(/^\/Users\/[^/]+/, '~') : ''; $('where').title = root || '';
+        $('title').title = root ? root.replace(/^\/Users\/[^/]+/, '~') : '';
       }
       const raw = await CH.load(io);
       lastLoad = Date.now();

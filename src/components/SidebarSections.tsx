@@ -26,7 +26,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { DRAG_THRESHOLD, swallowClick, targetAt } from './SplitView';
-import { EntityIcon } from './EntityIcon';
+import { PluginIcon } from './PluginIcon';
 import { PluginFrame } from './PluginFrame';
 
 /** the section ids on screen, top to bottom (for Move up / down) */
@@ -152,6 +152,7 @@ export function startSectionDrag(e: ReactPointerEvent, id: string, title: string
 export function SidebarDragLayer() {
   const drag = useSidebarLayout((s) => s.drag);
   const paneDrag = usePanes((s) => !!s.drag);
+  const plugin = usePlugins((s) => (drag && isPluginSection(drag.id) ? s.plugins.find((p) => pluginSection(p.id) === drag.id) : undefined));
   if (!drag) return null;
   return (
     <>
@@ -164,10 +165,11 @@ export function SidebarDragLayer() {
       )}
       {!paneDrag && (
         <div
-          className="pointer-events-none fixed z-50 max-w-[220px] truncate rounded-lg border border-border bg-popover/95 px-2.5 py-1.5 text-[12px] font-medium text-foreground shadow-[0_6px_20px_rgba(0,0,0,0.12)] backdrop-blur-sm"
+          className="pointer-events-none fixed z-50 flex max-w-[220px] items-center gap-1.5 rounded-lg border border-border bg-popover/95 px-2.5 py-1.5 text-[12px] font-medium text-foreground shadow-[0_6px_20px_rgba(0,0,0,0.12)] backdrop-blur-sm"
           style={{ left: drag.x + 14, top: drag.y + 12 }}
         >
-          {drag.title}
+          {plugin && <PluginIcon plugin={plugin} className="size-3.5 text-muted-foreground" />}
+          <span className="truncate">{drag.title}</span>
         </div>
       )}
     </>
@@ -312,7 +314,7 @@ export function PluginEntry({ plugin, active }: { plugin: Plugin; active: boolea
           active ? 'bg-sidebar-accent' : 'hover:bg-sidebar-hover',
         )}
       >
-        <EntityIcon name={plugin.title} seed={plugin.id} className="size-4 rounded-[5px] text-[7px]" />
+        <PluginIcon plugin={plugin} className="size-[15px] text-muted-foreground" />
         <span className="min-w-0 flex-1 truncate">{plugin.title}</span>
         <SectionMenu
           id={id}

@@ -24,6 +24,7 @@ import { usePlugins } from '@/lib/plugins';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { AppView } from './AppView';
 import { EntityIcon } from './EntityIcon';
+import { PluginIcon } from './PluginIcon';
 import { PluginFrame } from './PluginFrame';
 import { basename } from './format';
 import { ThreadFolder } from './FileChip';
@@ -134,9 +135,10 @@ export function useContentTitle(item: PaneContent | null): string {
 /** The small glyph a pane's content goes by: its runner, the app's logo, or a plugin's piece. */
 export function ContentIcon({ item }: { item: PaneContent }) {
   const runner = useAppStore((s) => (item.kind === 'thread' ? s.sessions.find((x) => x.id === item.id)?.runner : undefined));
+  const plugin = usePlugins((s) => (item.kind === 'plugin' ? s.plugins.find((p) => p.id === item.id) : undefined));
   if (item.kind === 'app')
     return <EntityIcon name={item.app.title} icons={item.app.icons} seed={item.app.seed} className="size-3.5 shrink-0 rounded-[4px] text-[6px]" />;
-  if (item.kind === 'plugin') return <Puzzle className="size-3.5 shrink-0 text-muted-foreground" />;
+  if (item.kind === 'plugin') return plugin ? <PluginIcon plugin={plugin} className="size-3.5 text-muted-foreground" /> : <Puzzle className="size-3.5 shrink-0 text-muted-foreground" />;
   return runner ? <RunnerBadge runner={runner} className="size-3.5 shrink-0 text-muted-foreground" /> : null;
 }
 

@@ -6,5 +6,6 @@
   "sidebar": "sidebar.html",
   "permissions": [
     "fs"
-  ]
+  ],
+  "icon": "radio-tower"
 }
