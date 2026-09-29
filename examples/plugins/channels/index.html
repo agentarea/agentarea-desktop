@@ -178,6 +178,7 @@
 
   /* panel content */
   .ph { display:flex; align-items:flex-start; gap:12px; padding:14px 16px 12px; border-bottom:1px solid var(--line); }
+  .ph .ava svg { width:20px; height:20px; }
   .ph .ava { width:42px; height:42px; border-radius:12px; font-size:22px; }
   .ph .t { flex:1; min-width:0; }
   .ph .t b { display:block; font-size:15px; font-weight:600; }
@@ -207,12 +208,60 @@
   .story h2 { font-size:13px; margin:14px 0 6px; } .story p, .story ul { margin:0 0 9px; } .story ul { padding-left:18px; }
   .note { font-size:12px; color:var(--muted); padding:8px 10px; border-radius:8px; background:var(--soft); }
   .path { font:11.5px ui-monospace, SFMono-Regular, Menlo, monospace; color:var(--subtle); word-break:break-all; }
+  /* inventory & gaps */
+  .tn { margin-left:5px; padding:0 5px; border-radius:999px; background:color-mix(in srgb, var(--warn) 16%, transparent); color:var(--warn); font-size:10.5px; font-weight:600; }
+  .tn:empty { display:none; }
+  .gb { flex:none; display:inline-flex; align-items:center; gap:3px; height:18px; padding:0 6px; border-radius:999px; font-size:10.5px; font-weight:600; color:var(--warn); background:color-mix(in srgb, var(--warn) 13%, transparent); white-space:nowrap; }
+  .gb.okb { color:var(--ok); background:color-mix(in srgb, var(--ok) 12%, transparent); }
+  .ivw { position:absolute; inset:0; overflow:auto; }
+  table.it { width:100%; border-collapse:separate; border-spacing:0; }
+  .it th { position:sticky; top:0; z-index:1; background:var(--bg); text-align:left; font-size:12px; font-weight:550; padding:0 10px; height:34px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  .it td { padding:7px 10px; border-bottom:1px solid var(--line); vertical-align:middle; font-size:12.5px; }
+  .it tr.r { cursor:pointer; } .it tr.r:hover td { background:var(--hover); } .it tr.sel td { background:var(--soft); }
+  .it td.n { text-align:right; white-space:nowrap; } .it td.nw { white-space:nowrap; } .it td.sc { max-width:230px; overflow:hidden; text-overflow:ellipsis; } .it th.n { text-align:right; }
+  .ti { display:flex; align-items:center; gap:9px; min-width:0; } .ti > svg { width:15px; height:15px; color:var(--muted); flex:none; }
+  .ti b { font-weight:550; display:block; } .ti .s2 { color:var(--subtle); font-size:11px; display:block; }
+  .pill { display:inline-flex; align-items:center; gap:5px; height:20px; padding:0 8px; border-radius:999px; font-size:11px; font-weight:600; color:var(--pc); background:color-mix(in srgb, var(--pc) 12%, transparent); white-space:nowrap; }
+  .pill i { width:6px; height:6px; border-radius:50%; background:currentColor; }
+  .chips { display:flex; flex-wrap:wrap; gap:4px; }
+  .chip { display:inline-flex; align-items:center; gap:4px; font-size:11.5px; height:21px; padding:0 8px; border-radius:999px; border:1px solid var(--line2); background:var(--card); cursor:pointer; white-space:nowrap; color:var(--fg); }
+  .chip:hover { background:var(--hover); } .chip svg { width:11px; height:11px; color:var(--muted); }
+  .muted2 { color:var(--subtle); } .okc { color:var(--ok); } .wc { color:var(--warn); } .bc { color:var(--bad); }
+  .cap { display:inline-flex; align-items:center; gap:6px; } .cap .t { width:46px; height:4px; border-radius:2px; background:var(--soft); border:1px solid var(--line); overflow:hidden; } .cap .t i { display:block; height:100%; background:var(--fg); opacity:.55; }
+  .kpi .tl { display:flex; align-items:center; gap:6px; } .kpi .tl svg { width:14px; height:14px; color:var(--muted); }
+  .kpi.click { cursor:pointer; } .kpi.click:hover { background:var(--hover); }
+  .kpi.on { background:var(--soft); box-shadow:inset 0 -2px 0 var(--fg); }
+  .kpi .big.wc { color:var(--warn); } .kpi .big.okc { color:var(--ok); }
+  .form { display:grid; grid-template-columns:104px 1fr; gap:8px 12px; align-items:center; font-size:12.5px; }
+  .form label { color:var(--muted); }
+  .form input, .form select, .form textarea { width:100%; max-width:none; height:30px; padding:0 8px; border:1px solid var(--line2); border-radius:8px; background:var(--card); outline:none; font:inherit; }
+  .form textarea { height:56px; padding:6px 8px; resize:vertical; }
+  .form .hint { grid-column:2; margin-top:-3px; color:var(--subtle); font-size:11.5px; }
+  .form .full { grid-column:1 / -1; }
+  .form h4 { grid-column:1 / -1; margin:8px 0 0; font-size:12px; font-weight:600; color:var(--muted); }
+  .inl { display:flex; gap:6px; align-items:center; } .inl > * { min-width:0; }
+  .btn.sm { height:24px; padding:0 9px; font-size:12px; }
+  .btn.danger { color:var(--bad); }
+  .xb { border:0; background:transparent; color:var(--subtle); cursor:pointer; padding:2px 5px; border-radius:5px; font-size:13px; line-height:1; }
+  .xb:hover { color:var(--bad); background:var(--hover); }
+  .ir { display:grid; grid-template-columns:16px 1fr auto; gap:9px; align-items:center; padding:7px 10px; border-top:1px solid var(--line); font-size:12.5px; }
+  .ir:first-child { border-top:0; } .ir > svg { width:14px; height:14px; color:var(--muted); } .ir .m { color:var(--subtle); font-size:11.5px; }
+  .ir.link { cursor:pointer; } .ir.link:hover { background:var(--hover); }
+  .box { margin-top:10px; padding:10px; border:1px solid var(--line); border-radius:10px; background:var(--soft); }
+  .warns { margin:10px 10px 0; border:1px solid color-mix(in srgb, var(--warn) 35%, var(--line)); border-radius:10px; overflow:hidden; }
+  .warns .wh { padding:7px 10px; font-size:12px; font-weight:600; color:var(--warn); background:color-mix(in srgb, var(--warn) 8%, transparent); }
+  .wr { display:flex; gap:10px; align-items:center; padding:6px 10px; border-top:1px solid var(--line); font-size:12.5px; }
+  .kind { flex:none; width:92px; font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:.03em; color:var(--warn); }
+  .gsel { display:flex; gap:6px; align-items:center; } .gsel select { height:26px; font-size:12px; max-width:280px; }
+  #toast { position:fixed; left:50%; bottom:18px; transform:translateX(-50%); z-index:50; max-width:70%; padding:8px 14px; border-radius:10px; background:var(--fg); color:var(--bg); font-size:12.5px; box-shadow:0 6px 24px rgba(0,0,0,.18); }
+  #toast.bad { background:var(--bad); color:#fff; }
   code { font:11.5px ui-monospace, SFMono-Regular, Menlo, monospace; background:var(--soft); border:1px solid var(--line); padding:0 4px; border-radius:4px; }
 </style>
 </head>
 <body>
 <div class="top">
   <h1 id="title">Channels</h1>
+  <div class="seg" id="tabSeg"><button data-t="channels" class="on">Channels</button><button data-t="inventory">Inventory</button><button data-t="gaps">Gaps<span class="tn num" id="gapN"></span></button></div>
   <div class="seg" id="viewSeg"><button data-v="table" class="on">Table</button><button data-v="graph">Graph</button></div>
   <span class="sp"></span>
   <span class="upd" id="upd"></span>
@@ -220,7 +269,25 @@
   <button class="ibtn" id="reveal" title="Reveal folder in Finder" aria-label="Reveal in Finder"></button>
 </div>
 <section class="kpis" id="kpis"></section>
-<div class="filters">
+<section class="kpis" id="invKpis" hidden></section>
+<div class="filters" id="invFilters" hidden>
+  <label class="search"><span class="sic"></span><input id="iq" placeholder="Search label, provider, geo, IP, secret…" autocomplete="off"></label>
+  <select id="iType" aria-label="Type"></select>
+  <select id="iStatus" aria-label="Status"></select>
+  <select id="iGeo" aria-label="Geo"></select>
+  <select id="iProv" aria-label="Provider"></select>
+  <span class="shown num" id="iShown"></span>
+  <button class="btn primary" id="iAdd">+ Add item</button>
+</div>
+<section class="kpis" id="gapKpis" hidden></section>
+<div class="filters" id="gapFilters" hidden>
+  <label class="search"><span class="sic"></span><input id="gq" placeholder="Search persona, city, niche…" autocomplete="off"></label>
+  <select id="gCountry" aria-label="Country"></select>
+  <select id="gCat" aria-label="Category"></select>
+  <span class="shown num" id="gShown"></span>
+  <button class="btn" id="gAuto">Auto-bind free items</button>
+</div>
+<div class="filters" id="chFilters">
   <label class="search"><span id="searchIc"></span><input id="q" placeholder="Search persona, niche, city, handle…" autocomplete="off"></label>
   <select id="fStage" aria-label="Stage"></select>
   <select id="fPlat" aria-label="Platform"></select>
@@ -281,8 +348,18 @@
   // Two hosts, one page: inside the AgentArea plugin frame files come through the bridge;
   // opened directly (grid.html under a static server) they come from fetch.
   const inApp = window.parent !== window;
+  // In the app the network comes from the "state" bridge (re-fetched only when its revision
+  // moves); SOUL.md through the granted folder. Without the permission: the export/ snapshots.
+  let snapRev = null, snapCache = null;
   const io = inApp
-    ? { list: async () => (await aa('fs.list', { path: '' })).filter((e) => e.dir).map((e) => e.name), read: (path) => aa('fs.read', { path }) }
+    ? {
+        read: (path) => aa('fs.read', { path }),
+        snapshot: async () => {
+          const { rev } = await aa('state.rev');
+          if (rev !== snapRev || !snapCache) { snapCache = await aa('state.snapshot'); snapRev = rev; }
+          return snapCache;
+        },
+      }
     : { list: async () => null, read: async (path) => { const r = await fetch(path.split('/').map(encodeURIComponent).join('/'), { cache: 'no-store' }); if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`); return r.text(); } };
   if (!inApp) $('reveal').hidden = true;
 
@@ -294,6 +371,7 @@
   let groupBy = store.get('channels.groupBy', 'category');
 
   async function refresh(force) {
+    if (force) snapRev = null;
     try {
       if (!root) {
         root = inApp ? (await aa('fs.root')).path : decodeURIComponent(location.pathname.replace(/\/[^/]*$/, '')) || '.';
@@ -305,7 +383,8 @@
       sig = raw.sig;
       data = CH.join(raw, Date.now());
       render();
-      if (sel) openSel(true);
+      if (tab === 'channels' && sel) openSel(true);
+      else if (tab !== 'channels' && invSel && invSel.kind === 'item') openInv(true);
     } catch (err) {
       $('view').innerHTML = `<div class="empty ${root ? 'err' : ''}">${root ? esc(err.message) : 'No folder granted. Plugins → Channels → grant ~/AgentArea/channels.'}</div>`;
     }
@@ -369,12 +448,22 @@
   }
 
   function render() {
+    for (const [id, t] of [['kpis', 'channels'], ['chFilters', 'channels'], ['invKpis', 'inventory'], ['invFilters', 'inventory'], ['gapKpis', 'gaps'], ['gapFilters', 'gaps']]) $(id).hidden = tab !== t;
+    $('viewSeg').hidden = tab !== 'channels';
+    document.querySelectorAll('#tabSeg button').forEach((b) => b.classList.toggle('on', b.dataset.t === tab));
+    const miss = ((data.gaps && data.gaps.requirements) || []).reduce((a, r) => a + r.missing_count, 0) + ((data.gaps && data.gaps.warnings) || []).length;
+    $('gapN').textContent = miss ? CH.fmtNum(miss) : '';
+    if (tab === 'inventory') return renderInventory();
+    if (tab === 'gaps') return renderGaps();
+    renderChannels();
+  }
+  function renderChannels() {
     renderFilters();
     const ps = data.personas.filter(personaMatches);
     renderKpis(ps);
     $('shown').textContent = `${ps.length} of ${data.personas.length} personas · ${shownChannels(ps).length} channels`;
     const errs = data.errors.length ? `<div class="empty err">${data.errors.map(esc).join('<br>')}</div>` : '';
-    if (!data.personas.length) { $('view').innerHTML = errs || '<div class="empty">No personas yet. An agent adds a folder with README.md and entries in channels.json — see SCHEMA.md.</div>'; return; }
+    if (!data.personas.length) { $('view').innerHTML = errs || '<div class="empty">No personas yet. Agents add them to ~/AgentArea/state.db (persona folder with SOUL.md + the agentarea_data tools) — see SCHEMA.md.</div>'; return; }
     if (!ps.length) { $('view').innerHTML = '<div class="empty">Nothing matches the filters.</div>'; return; }
     view === 'graph' ? renderGraph(ps) : renderTable(ps, errs);
   }
@@ -586,7 +675,7 @@
   function renderTable(ps, errs) {
     const plats = visiblePlatforms();
     const head = `<thead><tr><th class="pc">Persona</th><th class="mc">Country</th><th class="mc">Proxy</th><th class="mc">Valence</th><th class="mc">Archetype</th><th class="mc">Budget/mo</th>${plats.map((p) => `<th><span class="h">${CH.platformIcon(p)}${esc(CH.platformName(p))} <small class="num">${data.platformCount.get(p)}</small></span></th>`).join('')}</tr></thead>`;
-    const row = (p) => `<tr><th class="pc${sel && sel.kind === 'p' && sel.id === p.id ? ' sel' : ''}" data-p="${esc(p.id)}"><div class="who"><span class="ava">${esc(p.emoji)}</span><span class="t"><b>${esc(at(p))}</b><span>${esc([p.name !== at(p) ? p.name : '', p.niche].filter(Boolean).join(' · ') || p.category)}</span></span></div></th><td class="m">${esc(place(p) || '—')}</td><td class="m${p.proxyMismatch ? ' warn' : ''}" title="${p.proxyMismatch ? 'Exit country differs from the persona\'s country' : 'Exit country from channel network.geo'}">${esc(proxyText(p))}${p.proxyMismatch ? ' ⚠' : ''}</td><td class="m">${p.personality ? `<span class="vb" style="--vc:${VAL_COLOR[p.personality.valence] || '#888'}">${esc(p.personality.valence)}</span>` : '—'}</td><td class="m">${esc(p.personality ? p.personality.archetype : '—')}</td><td class="m num">${esc(moneyMap(p.budget))}</td>${
+    const row = (p) => `<tr><th class="pc${sel && sel.kind === 'p' && sel.id === p.id ? ' sel' : ''}" data-p="${esc(p.id)}"><div class="who"><span class="ava">${esc(p.emoji)}</span><span class="t"><b>${esc(at(p))}</b><span>${esc([p.name !== at(p) ? p.name : '', p.niche].filter(Boolean).join(' · ') || p.category)}</span></span>${p.gaps.length ? `<span class="gb" title="Missing inventory: ${esc(p.gaps.join(', '))}">⚠ ${p.gaps.length}</span>` : ''}</div></th><td class="m">${esc(place(p) || '—')}</td><td class="m${p.proxyMismatch ? ' warn' : ''}" title="${p.proxyMismatch ? 'Exit country differs from the persona\'s country' : 'Exit country from channel network.geo'}">${esc(proxyText(p))}${p.proxyMismatch ? ' ⚠' : ''}</td><td class="m">${p.personality ? `<span class="vb" style="--vc:${VAL_COLOR[p.personality.valence] || '#888'}">${esc(p.personality.valence)}</span>` : '—'}</td><td class="m">${esc(p.personality ? p.personality.archetype : '—')}</td><td class="m num">${esc(moneyMap(p.budget))}</td>${
       plats.map((pl) => { const c = p.cells[pl]; return c ? `<td class="c${sel && sel.kind === 'c' && sel.id === p.id && sel.platform === pl ? ' sel' : ''}" data-p="${esc(p.id)}" data-pl="${esc(pl)}" title="${esc(`${p.name} · ${CH.platformName(pl)} · ${CH.STAGE_LABEL[c.stage]}${netLine(c.network) ? ' · ' + netLine(c.network) : ''}`)}">${cell(c)}</td>` : '<td class="x"></td>'; }).join('')}</tr>`;
     let body = '';
     if (filter.sort === 'cat') {
@@ -629,7 +718,7 @@
   const panel = $('panel'), resizer = $('resizer');
   panel.style.width = `${store.get('channels.panelW', 440)}px`;
   function close() {
-    sel = null; panel.hidden = true; resizer.hidden = true;
+    sel = null; invSel = null; panel.hidden = true; resizer.hidden = true;
     document.querySelectorAll('.sel').forEach((e) => e.classList.remove('sel'));
     document.querySelectorAll('.hl').forEach((e) => e.classList.remove('hl'));
     if ($('graph')) $('graph').classList.remove('focus');
@@ -679,18 +768,20 @@
       <div class="acts"><button class="btn primary" id="discuss">${I.thread}Discuss in a thread</button>${p.folder && inApp ? `<button class="btn" id="open">${I.folder}Reveal in Finder</button>` : ''}<span class="msg" id="msg"></span></div>
       <div class="pb">
         ${facts.length ? `<div class="sec"><dl class="kv">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${esc(v)}</dd>`).join('')}</dl></div>` : ''}
+        ${invSection(p, null)}
         ${traitsHtml(p)}
-        <div class="sec"><h3>Channels <span class="r num">${p.channels.length}</span></h3>${rows ? `<div class="rows">${rows}</div>` : `<div class="note">No channels. Add entries to <code>channels.json</code> with <code>"persona": "${esc(p.id)}"</code>.</div>`}</div>
+        <div class="sec"><h3>Channels <span class="r num">${p.channels.length}</span></h3>${rows ? `<div class="rows">${rows}</div>` : `<div class="note">No channels in state.db for this persona.</div>`}</div>
         <div class="sec"><h3>Soul <span class="r">SOUL.md</span></h3><div class="story">${story ? md(story) : '—'}</div></div>
         <div class="sec"><div class="path">${esc(root || '')}/${esc(p.folder || p.id)}/</div></div>
       </div>`, keep);
     panel.querySelectorAll('.rw[data-pl]').forEach((r) => { r.onclick = () => { sel = { kind: 'c', id: p.id, platform: r.dataset.pl }; setHash(); openSel(); }; });
     if (p.folder && inApp) $('open').onclick = () => aa('fs.reveal', { path: p.folder }).catch((e) => { $('msg').textContent = e.message; });
     $('discuss').onclick = () => discuss(p, null);
+    wireInvSection(p, null);
   }
 
   function budgetTable(b, sp) {
-    if (!b && !sp) return '<div class="note">No budget yet — set <code>budget</code> (planned per month) and <code>spent</code> in channels.json.</div>';
+    if (!b && !sp) return '<div class="note">No budget yet — agents set it with channel_update (budget = planned per month, spent = actuals).</div>';
     const cur = (b || sp).currency;
     const rows = CH.BUDGET_KEYS.map((k) => `<dt><i class="sw" style="background:${BUD_COLOR[k]}"></i>${k}</dt><dd class="num">${esc(b && b.items[k] !== null ? CH.fmtMoney(b.items[k], cur) : '—')} <span class="m">/ spent ${esc(sp && sp.items[k] !== null ? CH.fmtMoney(sp.items[k], sp.currency) : '—')}</span></dd>`).join('');
     return `<dl class="kv bud">${rows}<dt><b>Total</b></dt><dd class="num"><b>${esc(b ? CH.fmtMoney(b.total, b.currency) : '—')}</b> <span class="m">/ spent ${esc(sp ? CH.fmtMoney(sp.total, sp.currency) : '—')}</span></dd></dl>`;
@@ -698,7 +789,8 @@
 
   function traitsHtml(p) {
     const t = p.personality; if (!t) return '';
-    const O = [['Openness', t.openness], ['Conscientiousness', t.conscientiousness], ['Extraversion', t.extraversion], ['Agreeableness', t.agreeableness], ['Neuroticism', t.neuroticism]];
+    const o = t.ocean || t;
+    const O = [['Openness', o.openness], ['Conscientiousness', o.conscientiousness], ['Extraversion', o.extraversion], ['Agreeableness', o.agreeableness], ['Neuroticism', o.neuroticism]];
     return `<div class="sec"><h3>Personality <span class="r">${esc(t.archetype || '')}</span></h3>
       <div class="ocean">${O.map(([k, v]) => `<span>${k}</span><span class="t"><i style="width:${((v || 0) / 5) * 100}%"></i></span><span class="num">${v ?? '—'}</span>`).join('')}</div>
       <dl class="kv" style="margin-top:10px"><dt>Valence</dt><dd><span class="vb" style="--vc:${VAL_COLOR[t.valence] || '#888'}">${esc(t.valence || '—')}</span></dd><dt>Humour</dt><dd>${esc(t.humor || '—')}</dd><dt>Energy</dt><dd>${esc(t.energy || '—')}</dd>${p.hypothesis ? `<dt>Hypothesis</dt><dd>${esc(p.hypothesis)}</dd>` : ''}</dl>
@@ -713,6 +805,7 @@
       <div class="acts"><button class="btn primary" id="discuss">${I.thread}Discuss in a thread</button><button class="btn" id="persona">Persona</button><span class="msg" id="msg"></span></div>
       <div class="pb">
         <div class="sec"><h3>Plan</h3><div class="desc">${esc(c.plan || '— (no plan yet)')}</div></div>
+        ${invSection(p, c)}
         <div class="sec"><h3>Budget / month <span class="r">planned vs spent</span></h3>${budgetTable(c.budget, c.spentPlan)}</div>
         <div class="sec"><h3>KPI · reach, 30 days</h3>
           <div class="stats num">
@@ -737,11 +830,12 @@
           <dt>Geo</dt><dd>${esc(n.geo || '—')}</dd>
           <dt>Device profile</dt><dd>${esc(n.device || '—')}</dd>
           <dt>Connects to</dt><dd>${esc(n.url ? shortUrl(n.url) : CH.platformName(c.platform))}</dd></dl></div>
-        <div class="sec"><h3>Posts <span class="r num">${c.scheduled} scheduled · next ${esc(CH.fmtWhen(c.next))}</span></h3>${posts ? `<div class="rows">${posts}</div>` : '<div class="note">No posts yet. Agents add them to <code>posts.json</code>.</div>'}</div>
-        <div class="sec"><div class="path">${esc(root || '')}/channels.json · metrics.csv · posts.json</div></div>
+        <div class="sec"><h3>Posts <span class="r num">${c.scheduled} scheduled · next ${esc(CH.fmtWhen(c.next))}</span></h3>${posts ? `<div class="rows">${posts}</div>` : '<div class="note">No posts yet. Agents add them with the post_upsert tool.</div>'}</div>
+        <div class="sec"><div class="path">~/AgentArea/state.db · channels #${esc(c.id ?? '')}</div></div>
       </div>`, keep);
     $('persona').onclick = () => { sel = { kind: 'p', id: p.id }; setHash(); openSel(); };
     $('discuss').onclick = () => discuss(p, c);
+    wireInvSection(p, c);
   }
 
   async function discuss(p, c) {
@@ -751,11 +845,12 @@
     const lines = [
       c ? `Let's work on ${at(p)} (${p.name})'s ${CH.platformName(c.platform)} channel (role: ${c.role}) (${[p.niche, place(p)].filter(Boolean).join(', ')}).` : `Let's work on the persona ${at(p)} — ${p.name} (${[p.niche, place(p)].filter(Boolean).join(', ')}).`,
       ...(c ? [ch(c)] : p.channels.map(ch)),
-      `Persona: ${root}/${p.folder || p.id}/SOUL.md and config.json. Channels: ${root}/channels.json. Metrics: ${root}/metrics.csv. Posts: ${root}/posts.json. Format: ${root}/SCHEMA.md.`,
+      `Persona soul: ${root}/${p.folder || p.id}/SOUL.md. Everything else (persona fields, channels, budgets, metrics, posts, inventory) is in ~/AgentArea/state.db — read with the agentarea_data tool state_query, change with channel_update / persona_update / post_upsert / metrics_add / inventory_* (inventory_gaps shows what's missing). Format: ${root}/SCHEMA.md.`,
+      p.gaps.length ? `Missing inventory for this persona: ${p.gaps.join(', ')}.` : null,
       '',
       c && c.plan ? `Plan: ${c.plan}. Budget/mo: ${c.budget ? CH.fmtMoney(c.budget.total, c.budget.currency) : '—'}, spent: ${c.spentPlan ? CH.fmtMoney(c.spentPlan.total, c.spentPlan.currency) : '—'}.` : null,
-      c ? 'Help move this channel to its next stage and toward its reach target. Record changes in channels.json / metrics.csv / posts.json per SCHEMA.md (rewrite the whole file via a temp file).'
-        : 'Help plan the launch: which channels to set up first, reach targets, first posts. Record changes in channels.json / posts.json per SCHEMA.md.',
+      c ? 'Help move this channel to its next stage and toward its reach target. Record changes with the agentarea_data tools (not by editing files).'
+        : 'Help plan the launch: which channels to set up first, reach targets, first posts, what inventory to get. Record changes with the agentarea_data tools.',
     ].filter((l) => l !== null);
     if (!inApp) {
       try { await navigator.clipboard.writeText(lines.join('\n')); msg('Prompt copied — paste it into an AgentArea thread'); } catch { msg('Open inside AgentArea to start a thread'); }
@@ -763,16 +858,420 @@
     }
     try {
       const { id } = await aa('threads.create');
-      for (const f of [p.folder ? `${p.folder}/SOUL.md` : null, p.folder ? `${p.folder}/config.json` : null, 'channels.json', 'SCHEMA.md'].filter(Boolean)) await aa('threads.attach', { path: f, threadId: id }).catch(() => {});
+      for (const f of [p.folder ? `${p.folder}/SOUL.md` : null, 'SCHEMA.md'].filter(Boolean)) await aa('threads.attach', { path: f, threadId: id }).catch(() => {});
       await aa('threads.send', { threadId: id, text: lines.join('\n') });
       msg('Sent to a new thread ✓');
     } catch (err) { msg(err.message); }
     btn.disabled = false;
   }
 
+  // ── inventory & gaps (state.db): items, who uses them, what's missing
+  const TYPES = ['proxy', 'email', 'phone', 'device_profile', 'account', 'api_key', 'domain', 'card', 'other'];
+  const TYPE_NAME = { proxy: 'Proxy', email: 'Email', phone: 'Phone', device_profile: 'Device profile', account: 'Account', api_key: 'API key', domain: 'Domain', card: 'Card', other: 'Other' };
+  const ic = (d) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
+  const TYPE_IC = {
+    proxy: ic('<circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2 2 2 10 0 12M8 2c-2 2-2 10 0 12"/>'),
+    email: ic('<rect x="2" y="3.5" width="12" height="9" rx="1.5"/><path d="m2.5 4.5 5.5 4 5.5-4"/>'),
+    phone: ic('<rect x="4.5" y="1.75" width="7" height="12.5" rx="1.6"/><path d="M7.2 12h1.6"/>'),
+    device_profile: ic('<rect x="2" y="2.75" width="12" height="8" rx="1.3"/><path d="M5.5 13.5h5M8 10.75v2.75"/>'),
+    account: ic('<circle cx="8" cy="5.5" r="2.75"/><path d="M2.75 13.75c.6-2.7 2.7-4.25 5.25-4.25s4.65 1.55 5.25 4.25"/>'),
+    api_key: ic('<circle cx="5.2" cy="10.8" r="2.7"/><path d="m7.2 8.8 5.8-5.8M11 5l1.6 1.6M9.6 6.4l1.2 1.2"/>'),
+    domain: ic('<circle cx="8" cy="8" r="2.5"/><path d="M10.5 8v1a2 2 0 0 0 3.5 1.3A6 6 0 1 0 11.6 13"/>'),
+    card: ic('<rect x="1.75" y="3.5" width="12.5" height="9" rx="1.5"/><path d="M1.75 6.5h12.5M4.5 10h2"/>'),
+    other: ic('<path d="M2.5 5 8 2.25 13.5 5v6L8 13.75 2.5 11z"/><path d="M2.5 5 8 7.75 13.5 5M8 7.75v6"/>'),
+  };
+  const STATUSES = ['active', 'reserved', 'broken', 'retired'];
+  const ST_COLOR = { active: 'var(--ok)', reserved: '#2563eb', broken: 'var(--bad)', retired: 'var(--subtle)' };
+  const PURPOSES = ['egress', 'login', '2fa', 'api', 'device', 'other'];
+  const DEF_PURPOSE = { proxy: 'egress', email: 'login', phone: '2fa', device_profile: 'device', api_key: 'api', account: 'login' };
+  // Plain facts per type (credentials go to the vault, never here).
+  const META_KEYS = { proxy: ['host', 'port', 'protocol', 'ip'], email: ['address'], phone: ['number'], device_profile: ['tool', 'profile_id'], api_key: ['service'], account: ['platform', 'username', 'url', 'email_item', 'recovery_email_item', 'has_2fa'], domain: ['name', 'registrar'], card: ['last4', 'bank'], other: [] };
+  const stPill = (st) => `<span class="pill" style="--pc:${ST_COLOR[st] || 'var(--subtle)'}"><i></i>${esc(st)}</span>`;
+  const invMoney = (n, cur) => (n === null || n === undefined ? '—' : CH.fmtMoney(n, CH.currency(cur || 'EUR')));
+  const geoCC = (g) => CH.geoCountry(g);
+  const canWrite = () => inApp && data.viaState;
+  const itemById = (id) => (data.inventory || []).find((i) => i.id === id);
+  const personaById = (h) => data.personas.find((p) => p.id === h);
+  const capText = (i) => `${i.used}/${i.capacity === null || i.capacity === undefined ? '∞' : i.capacity}`;
+  let tab = store.get('channels.tab', 'channels');
+  const INV = { q: '', type: 'all', status: 'all', geo: 'all', provider: 'all' };
+  const GF = { q: '', country: 'all', cat: 'all' };
+  let gapReq = null, vaultNames = null;
+
+  // The frame is sandboxed without allow-modals: no alert/confirm. Errors go to a toast,
+  // destructive buttons ask twice.
+  function toast(text, bad) {
+    let el = $('toast');
+    if (!el) { el = document.createElement('div'); el.id = 'toast'; document.body.append(el); }
+    el.textContent = text; el.className = bad ? 'bad' : ''; el.hidden = false;
+    clearTimeout(toast.t); toast.t = setTimeout(() => { el.hidden = true; }, 5000);
+  }
+  function twoStep(btn, label, fn) {
+    if (btn.dataset.armed) { delete btn.dataset.armed; btn.textContent = btn.dataset.orig; return fn(); }
+    btn.dataset.orig = btn.textContent; btn.dataset.armed = '1'; btn.textContent = label;
+    setTimeout(() => { if (btn.dataset.armed) { delete btn.dataset.armed; btn.textContent = btn.dataset.orig; } }, 4000);
+  }
+  async function mutate(method, params, msgEl) {
+    try {
+      const r = await aa(`state.${method}`, params);
+      await refresh(true);
+      return r;
+    } catch (err) {
+      if (msgEl && msgEl.isConnected) { msgEl.textContent = err.message; msgEl.className = 'msg bc'; } else toast(err.message, true);
+      throw err;
+    }
+  }
+
+  /** Items that could serve `type` for a subject in `country`: usable, with room; geo match first. */
+  function candidates(type, country, platform) {
+    return (data.inventory || [])
+      .filter((i) => i.type === type && (!platform || type !== 'account' || !(i.meta && i.meta.platform) || i.meta.platform === platform) && (i.status === 'active' || i.status === 'reserved') && (i.capacity === null || i.capacity === undefined || i.used < i.capacity))
+      .map((i) => ({ i, match: !country || !geoCC(i.geo) ? 0 : geoCC(i.geo) === country ? 1 : -1 }))
+      .sort((a, b) => b.match - a.match || a.i.used - b.i.used || String(a.i.label).localeCompare(String(b.i.label)));
+  }
+  const candLabel = ({ i, match }) => `${i.label}${i.geo ? ` · ${i.geo}` : ''} · ${capText(i)}${match < 0 ? ' · ⚠ other country' : ''}`;
+
+  function subjectOptions(kind) {
+    if (kind === 'persona') return data.personas.map((p) => ({ v: p.id, l: `@${p.id} — ${p.name}${p.country ? ` (${p.country})` : ''}` }));
+    if (kind === 'channel') return data.personas.flatMap((p) => p.channels.map((c) => ({ v: `${p.id}/${c.platform}`, l: `@${p.id} · ${CH.platformName(c.platform)}` })));
+    return [];
+  }
+
+  // ── inventory tab
+  function renderInvKpis() {
+    const sum = (data.gaps && data.gaps.summary) || [];
+    const by = new Map(sum.map((s) => [s.type, s]));
+    const shown = TYPES.filter((t) => by.has(t) || ['proxy', 'email', 'phone', 'device_profile'].includes(t));
+    const cost = {}; for (const s of sum) for (const [c, v] of Object.entries(s.cost_month || {})) cost[c] = (cost[c] || 0) + v;
+    const items = data.inventory || [];
+    const warn = ((data.gaps && data.gaps.warnings) || []).length;
+    const missing = ((data.gaps && data.gaps.requirements) || []).reduce((a, r) => a + r.missing_count, 0);
+    $('invKpis').innerHTML = `<div class="kpi"><div class="lbl">Inventory</div><div class="big num">${items.length}<small>items</small></div>
+        <div class="sub num"><span>${esc(Object.keys(cost).length ? Object.entries(cost).map(([c, v]) => invMoney(v, c)).join(' + ') : '€0')}/mo</span><span class="${missing ? 'wc' : ''}">${missing} gaps</span>${warn ? `<span class="wc">${warn} warnings</span>` : ''}</div></div>` +
+      shown.map((t) => {
+        const s = by.get(t) || { total: 0, in_use: 0, free: 0, reserved: 0, broken: 0, retired: 0, slots_used: 0, slots_total: 0, unlimited: 0, over_capacity: 0, cost_month: {} };
+        const util = s.slots_total ? s.slots_used / s.slots_total : null;
+        return `<div class="kpi click${INV.type === t ? ' on' : ''}" data-t="${t}"><div class="lbl tl">${TYPE_IC[t]}${esc(TYPE_NAME[t])}</div>
+          <div class="big num">${s.total}<small>${s.in_use} in use · ${s.free} free</small></div>
+          <div class="sub num">${s.reserved ? `<span>${s.reserved} reserved</span>` : ''}<span class="${s.broken ? 'bc' : ''}">${s.broken} broken</span><span>${s.retired} retired</span>${s.over_capacity ? `<span class="wc">${s.over_capacity} over capacity</span>` : ''}</div>
+          <div class="bar" title="Capacity: ${s.slots_used} of ${s.slots_total} shared slots used${s.unlimited ? ` · ${s.unlimited} unlimited` : ''}"><i style="width:${util === null ? 0 : Math.min(100, util * 100).toFixed(1)}%;background:${util !== null && util > 0.9 ? 'var(--warn)' : 'var(--fg)'}"></i></div>
+          <div class="sub num"><span>cap ${util === null ? '—' : CH.fmtPct(util)}</span><span>${esc(Object.entries(s.cost_month || {}).map(([c, v]) => invMoney(v, c)).join(' + ') || '—')}/mo</span></div></div>`;
+      }).join('');
+    $('invKpis').querySelectorAll('.kpi.click').forEach((k) => { k.onclick = () => { INV.type = INV.type === k.dataset.t ? 'all' : k.dataset.t; render(); }; });
+  }
+  function renderInvFilters() {
+    const items = data.inventory || [];
+    const opt = (id, label, vals, cur, name) => { $(id).innerHTML = `<option value="all">${label}</option>` + vals.map((v) => `<option value="${esc(v)}" ${cur === v ? 'selected' : ''}>${esc(name ? name(v) : v)}</option>`).join(''); };
+    opt('iType', 'All types', TYPES, INV.type, (t) => TYPE_NAME[t]);
+    opt('iStatus', 'All statuses', STATUSES, INV.status);
+    opt('iGeo', 'All geo', [...new Set(items.map((i) => geoCC(i.geo)).filter(Boolean))].sort(), INV.geo, (c) => `${CH.flag(c)} ${c}`);
+    opt('iProv', 'All providers', [...new Set(items.map((i) => i.provider).filter(Boolean))].sort(), INV.provider);
+    $('iAdd').hidden = !canWrite();
+  }
+  function invMatches(i) {
+    if (INV.type !== 'all' && i.type !== INV.type) return false;
+    if (INV.status !== 'all' && i.status !== INV.status) return false;
+    if (INV.geo !== 'all' && geoCC(i.geo) !== INV.geo) return false;
+    if (INV.provider !== 'all' && i.provider !== INV.provider) return false;
+    if (INV.q) {
+      const hay = [i.label, i.provider, i.geo, i.notes, i.secret_ref, JSON.stringify(i.meta || {}), ...(i.bindings || []).map((b) => b.label)].join(' ').toLowerCase();
+      if (!INV.q.split(/\s+/).every((w) => hay.includes(w))) return false;
+    }
+    return true;
+  }
+  // Accounts: platform + username, their login / recovery email items, 2FA.
+  const itemLabel = (id) => { const x = itemById(+id); return x ? x.label : `#${id}`; };
+  const accountsUsing = (emailId) => (data.inventory || []).filter((a) => a.type === 'account' && a.meta && (+a.meta.email_item === emailId || +a.meta.recovery_email_item === emailId));
+  function itemTitle(i) {
+    const m = i.meta || {};
+    if (i.type === 'account') {
+      const bits = [m.email_item ? `✉ ${itemLabel(m.email_item)}` : '', m.recovery_email_item ? `recovery ${itemLabel(m.recovery_email_item)}` : ''].filter(Boolean).join(' · ');
+      return `<div class="ti">${m.platform ? CH.platformIcon(m.platform) : TYPE_IC.account}<span><b>${esc(m.username ? '@' + m.username : i.label)}${m.has_2fa ? ' <span class="pill" style="--pc:var(--ok);height:17px;font-size:10px">2FA</span>' : ''}</b><span class="s2">${esc([CH.platformName(m.platform || ''), i.provider, m.url ? shortUrl(m.url) : ''].filter(Boolean).join(' · '))}</span>${bits ? `<span class="s2">${esc(bits)}</span>` : ''}</span></div>`;
+    }
+    const acc = i.type === 'email' ? accountsUsing(i.id) : [];
+    const extra = acc.length ? `for ${acc.map((a) => `${CH.platformName(a.meta.platform || '')} @${a.meta.username || a.label}`).join(', ')}` : '';
+    return `<div class="ti">${TYPE_IC[i.type] || TYPE_IC.other}<span><b>${esc(i.label)}${m.verified === false ? ' <span class="pill" style="--pc:var(--warn);height:17px;font-size:10px">unverified</span>' : ''}</b><span class="s2">${esc([TYPE_NAME[i.type], i.provider].filter(Boolean).join(' · '))}</span>${extra ? `<span class="s2">${esc(extra)}</span>` : ''}</span></div>`;
+  }
+  const secretCell = (i) => (!i.secret_ref ? '<span class="muted2">—</span>' : i.secret === 'ok' ? `<span class="okc" title="Vault secret exists">✓ ${esc(i.secret_ref)}</span>` : `<span class="wc" title="No vault secret with this name — add it in Secrets or edit the item">⚠ ${esc(i.secret_ref)}</span>`);
+  const usedBy = (i) => (i.bindings || []).length
+    ? `<div class="chips">${i.bindings.slice(0, 4).map((b) => `<span class="chip" data-p="${esc(b.persona || '')}" data-pl="${esc(b.platform || '')}" data-st="${esc(b.subject_type)}" title="${esc(b.purpose)} since ${esc(String(b.since || '').slice(0, 10))}">${b.platform ? CH.platformIcon(b.platform) : ''}${esc(b.label)}</span>`).join('')}${i.bindings.length > 4 ? `<span class="muted2">+${i.bindings.length - 4}</span>` : ''}</div>`
+    : '<span class="muted2">free</span>';
+  function renderInventory() {
+    renderInvKpis(); renderInvFilters();
+    const all = data.inventory || [];
+    const items = all.filter(invMatches).sort((a, b) => TYPES.indexOf(a.type) - TYPES.indexOf(b.type) || String(a.label).localeCompare(String(b.label), undefined, { numeric: true }));
+    $('iShown').textContent = `${items.length} of ${all.length} items`;
+    if (!all.length) {
+      $('view').innerHTML = `<div class="empty">No inventory yet.${canWrite() ? ' Add your first proxies, emails, phones and device profiles with <b>+ Add item</b>, then bind them to personas — the <b>Gaps</b> tab shows who still needs what.' : ' Agents add items with the inventory_add tool (see SCHEMA.md).'}</div>`;
+      return;
+    }
+    const row = (i) => `<tr class="r${invSel && invSel.id === i.id ? ' sel' : ''}" data-id="${i.id}">
+      <td>${itemTitle(i)}</td>
+      <td class="nw">${i.geo ? `${CH.flag(geoCC(i.geo))} ${esc(i.geo)}` : '<span class="muted2">—</span>'}${i.meta && i.meta.ip ? `<span class="s2 muted2" style="display:block;font-size:11px">${esc(i.meta.ip)}</span>` : ''}</td>
+      <td class="nw">${stPill(i.status)}</td>
+      <td>${usedBy(i)}</td>
+      <td class="n"><span class="cap ${i.over_capacity ? 'wc' : ''}" title="${i.capacity ? `shared by ${i.used} of ${i.capacity}` : 'unlimited sharing'}"><span class="t"><i style="width:${i.capacity ? Math.min(100, (i.used / i.capacity) * 100) : i.used ? 100 : 0}%"></i></span>${esc(capText(i))}${i.over_capacity ? ' ⚠' : ''}</span></td>
+      <td class="n num">${esc(invMoney(i.cost_month, i.currency))}</td>
+      <td class="nw sc" title="${esc(i.secret_ref || '')}">${secretCell(i)}</td></tr>`;
+    const old = $('view').querySelector('.ivw'); const top = old ? old.scrollTop : 0;
+    $('view').innerHTML = `<div class="ivw"><table class="it"><thead><tr><th>Item</th><th>Geo</th><th>Status</th><th>Used by</th><th class="n">Capacity</th><th class="n">Cost / mo</th><th>Secret</th></tr></thead><tbody>${items.length ? items.map(row).join('') : '<tr><td colspan="7" class="empty">Nothing matches the filters.</td></tr>'}</tbody></table></div>`;
+    const w = $('view').querySelector('.ivw'); w.scrollTop = top;
+    w.addEventListener('click', (e) => {
+      const chip = e.target.closest('.chip[data-p]');
+      if (chip && chip.dataset.p) { e.stopPropagation(); gotoSubject(chip.dataset.p, chip.dataset.st === 'channel' ? chip.dataset.pl : null); return; }
+      const tr = e.target.closest('tr.r'); if (!tr) return;
+      invSel = { kind: 'item', id: +tr.dataset.id }; openInv();
+    });
+  }
+  let invSel = null; // { kind: 'item' | 'edit' | 'new', id }
+  function gotoSubject(persona, platform) {
+    tab = 'channels'; store.set('channels.tab', tab); invSel = null;
+    sel = platform ? { kind: 'c', id: persona, platform } : { kind: 'p', id: persona };
+    render(); setHash(); openSel();
+  }
+  function openInv(keep) {
+    if (!invSel) return;
+    if (invSel.kind === 'new') return itemForm(null);
+    const i = itemById(invSel.id);
+    if (!i) { invSel = null; return close(); }
+    document.querySelectorAll('.it tr.sel').forEach((t) => t.classList.remove('sel'));
+    const tr = document.querySelector(`.it tr[data-id="${i.id}"]`); if (tr) tr.classList.add('sel');
+    invSel.kind === 'edit' ? itemForm(i) : itemCard(i, keep);
+  }
+  const invHeader = (i, sub) => `<div class="ph"><span class="ava">${TYPE_IC[i ? i.type : 'other']}</span><div class="t"><b>${esc(i ? i.label : 'New item')}</b><span>${sub || ''}</span><div class="meta">${i ? stPill(i.status) : ''}</div></div><button class="ibtn" id="close" aria-label="Close">${I.close}</button></div>`;
+
+  function itemCard(i, keep) {
+    const meta = Object.entries(i.meta || {}).filter(([k, v]) => v !== '' && v !== null && !['email_item', 'recovery_email_item', 'kind'].includes(k));
+    const facts = [['Type', TYPE_NAME[i.type]], ['Provider', i.provider], ['Geo', i.geo ? `${CH.flag(geoCC(i.geo))} ${i.geo}` : ''], ['Cost / month', i.cost_month !== null && i.cost_month !== undefined ? invMoney(i.cost_month, i.currency) : ''],
+      ['Capacity', i.capacity ? `${i.used} of ${i.capacity} used${i.over_capacity ? ' ⚠ over capacity' : ''}` : `${i.used} · unlimited`], ...meta.map(([k, v]) => [k, typeof v === 'object' ? JSON.stringify(v) : String(v)]), ['Notes', i.notes]].filter(([, v]) => v);
+    const binds = (i.bindings || []).map((b) => `<div class="ir link" data-p="${esc(b.persona || '')}" data-pl="${esc(b.subject_type === 'channel' ? b.platform || '' : '')}">${b.platform ? CH.platformIcon(b.platform) : TYPE_IC.other}<div><div>${esc(b.label)}</div><div class="m">${esc(b.subject_type)} · ${esc(b.purpose)} · since ${esc(String(b.since || '').slice(0, 10))}</div></div>${canWrite() ? `<button class="xb" data-unbind="${b.id}" title="Unbind">×</button>` : ''}</div>`).join('');
+    show(`${invHeader(i, esc([TYPE_NAME[i.type], i.provider].filter(Boolean).join(' · ')))}
+      <div class="acts">${canWrite() ? `<button class="btn" id="iEdit">Edit</button>${i.status !== 'retired' ? '<button class="btn" id="iRetire">Retire</button>' : ''}${i.status === 'broken' ? '' : '<button class="btn" id="iBroken">Mark broken</button>'}<button class="btn danger" id="iDel">Delete</button>` : ''}<span class="msg" id="msg"></span></div>
+      <div class="pb">
+        <div class="sec"><dl class="kv">${facts.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}${
+          ['email_item', 'recovery_email_item'].filter((k) => i.meta && i.meta[k]).map((k) => `<dt>${k === 'email_item' ? 'Login email' : 'Recovery email'}</dt><dd><span class="chip" data-item="${esc(i.meta[k])}">${TYPE_IC.email}${esc(itemLabel(i.meta[k]))}</span></dd>`).join('')}${
+          i.type === 'email' && accountsUsing(i.id).length ? `<dt>Account</dt><dd><div class="chips">${accountsUsing(i.id).map((a) => `<span class="chip" data-item="${a.id}">${CH.platformIcon(a.meta.platform || '')}@${esc(a.meta.username || a.label)}</span>`).join('')}</div></dd>` : ''}<dt>Secret</dt><dd>${secretCell(i)}${i.secret_ref && i.secret !== 'ok' ? '<div class="note" style="margin-top:6px">No vault secret with this name yet: edit the item to create it, or add it in AgentArea → Secrets.</div>' : ''}</dd></dl></div>
+        <div class="sec"><h3>Used by <span class="r num">${capText(i)}</span></h3>${binds ? `<div class="rows">${binds}</div>` : '<div class="note">Not bound to anyone yet.</div>'}
+          ${canWrite() && i.status !== 'broken' && i.status !== 'retired' ? `<div class="box"><div class="form">
+            <label for="bType">Bind to</label><select id="bType">${i.type === 'account' ? '<option value="channel">Channel</option>' : '<option value="persona">Persona</option><option value="channel">Channel</option><option value="mcp">MCP server</option>'}</select>
+            <label for="bWho">Who</label><div><input id="bWho" list="bList" placeholder="@handle, handle/platform or MCP name" autocomplete="off"><datalist id="bList"></datalist></div>
+            <label for="bPurpose">Purpose</label><select id="bPurpose">${PURPOSES.map((p) => `<option ${p === (DEF_PURPOSE[i.type] || 'other') ? 'selected' : ''}>${p}</option>`).join('')}</select>
+            <span></span><div class="inl"><button class="btn primary sm" id="bGo">Bind</button><span class="msg" id="bMsg"></span></div></div></div>` : ''}</div>
+        <div class="sec"><div class="path">state.db · inventory_items #${i.id} · created ${esc(String(i.created_at || '').slice(0, 10))} · updated ${esc(String(i.updated_at || '').slice(0, 10))}</div></div>
+      </div>`, keep);
+    panel.querySelectorAll('.kv .chip[data-item]').forEach((c) => { c.onclick = () => { invSel = { kind: 'item', id: +c.dataset.item }; openInv(); }; });
+    panel.querySelectorAll('.ir.link').forEach((r) => { r.onclick = (e) => { if (e.target.closest('[data-unbind]') || !r.dataset.p) return; gotoSubject(r.dataset.p, r.dataset.pl || null); }; });
+    panel.querySelectorAll('[data-unbind]').forEach((b) => { b.onclick = (e) => { e.stopPropagation(); mutate('inventory_unbind', { binding_id: +b.dataset.unbind }, $('msg')).catch(() => {}); }; });
+    if (!canWrite()) return;
+    $('iEdit').onclick = () => { invSel = { kind: 'edit', id: i.id }; openInv(); };
+    if ($('iRetire')) $('iRetire').onclick = () => mutate('inventory_update', { id: i.id, set: { status: 'retired' } }, $('msg')).catch(() => {});
+    if ($('iBroken')) $('iBroken').onclick = () => mutate('inventory_update', { id: i.id, set: { status: 'broken' } }, $('msg')).catch(() => {});
+    $('iDel').onclick = () => twoStep($('iDel'), i.used ? `Delete + end ${i.used} binding${i.used > 1 ? 's' : ''}?` : 'Really delete?', async () => {
+      try { await mutate('inventory_delete', { id: i.id, force: true }, $('msg')); invSel = null; close(); } catch { /* shown */ }
+    });
+    if (!$('bType')) return;
+    const plat = i.type === 'account' && i.meta && i.meta.platform;
+    const fill = () => { $('bList').innerHTML = subjectOptions($('bType').value).filter((o) => !plat || o.v.endsWith(`/${plat}`)).map((o) => `<option value="${esc(o.v)}">${esc(o.l)}</option>`).join(''); $('bWho').value = ''; };
+    $('bType').onchange = fill; fill();
+    $('bGo').onclick = () => {
+      const who = $('bWho').value.trim().replace(/^@/, '');
+      if (!who) { $('bMsg').textContent = 'Pick who uses it'; return; }
+      mutate('inventory_bind', { item_id: i.id, subject_type: $('bType').value, subject_id: who, purpose: $('bPurpose').value }, $('bMsg')).catch(() => {});
+    };
+  }
+
+  async function itemForm(i) {
+    const t0 = i ? i.type : INV.type !== 'all' ? INV.type : 'proxy';
+    if (vaultNames === null) vaultNames = await aa('vault.list').catch(() => []);
+    const names = vaultNames.map((v) => v.name);
+    const cur = i && i.secret_ref;
+    const secOpts = `<option value="">— none —</option>${names.map((n) => `<option ${cur === n ? 'selected' : ''}>${esc(n)}</option>`).join('')}${cur && !names.includes(cur) ? `<option value="${esc(cur)}" selected>${esc(cur)} (missing in vault)</option>` : ''}<option value="__new">+ New secret…</option>`;
+    show(`${invHeader(i, i ? 'Edit item' : 'Add an item to the inventory')}
+      <div class="pb"><form class="form" id="iForm" autocomplete="off" style="padding-top:14px">
+        <label for="fType">Type</label><select id="fType">${TYPES.map((t) => `<option value="${t}" ${t === t0 ? 'selected' : ''}>${TYPE_NAME[t]}</option>`).join('')}</select>
+        <label for="fLabel">Label</label><input id="fLabel" required placeholder="e.g. DE residential #03" value="${esc(i ? i.label : '')}">
+        <label for="fProv">Provider</label><input id="fProv" placeholder="e.g. IPRoyal, Gmail, Twilio, AdsPower" value="${esc(i ? i.provider : '')}">
+        <label for="fGeo">Geo</label><input id="fGeo" placeholder="DE · DE-BY · Munich, DE" value="${esc(i ? i.geo : '')}">
+        <span class="hint">Country code first — the Gaps tab checks it against the persona's country.</span>
+        <label for="fCost">Cost / month</label><div class="inl"><input id="fCost" type="number" step="0.01" min="0" placeholder="8" value="${i && i.cost_month !== null && i.cost_month !== undefined ? i.cost_month : ''}"><select id="fCur" style="width:90px">${['EUR', 'USD', 'PLN', 'GBP', 'CZK'].map((c) => `<option ${(i ? i.currency : 'EUR') === c ? 'selected' : ''}>${c}</option>`).join('')}</select></div>
+        <label for="fStatus">Status</label><select id="fStatus">${STATUSES.map((s) => `<option ${(i ? i.status : 'active') === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
+        <label for="fCap">Capacity</label><input id="fCap" type="number" min="1" step="1" placeholder="unlimited" value="${i && i.capacity ? i.capacity : ''}">
+        <span class="hint">How many personas / channels / MCPs may share it. A persona's proxy: 1.</span>
+        <h4>Details <span class="muted2" style="font-weight:400">— plain facts only</span></h4>
+        <div class="full form" id="fMeta" style="grid-template-columns:104px 1fr"></div>
+        <h4>Credentials <span class="muted2" style="font-weight:400">— stored in the Keychain vault, never in the database</span></h4>
+        <label for="fSecret">Vault secret</label><select id="fSecret">${secOpts}</select>
+        <div class="full form" id="fNew" hidden style="grid-template-columns:104px 1fr">
+          <label for="nName">Name</label><input id="nName" placeholder="PROXY_DE_03">
+          <label for="nVal">Value</label><input id="nVal" type="password" placeholder="password, user:pass, API key…">
+          <label for="nHosts">Allowed hosts</label><input id="nHosts" placeholder="api.example.com (optional)">
+          <span class="hint">The value goes straight to the Keychain; this page never sees it again.</span>
+        </div>
+        <label for="fNotes">Notes</label><textarea id="fNotes">${esc(i ? i.notes : '')}</textarea>
+        <span></span><div class="inl"><button class="btn primary" type="submit">${i ? 'Save' : 'Add item'}</button><button class="btn" type="button" id="fCancel">Cancel</button><span class="msg" id="fMsg"></span></div>
+      </form></div>`);
+    const meta = { ...(i && i.meta ? i.meta : {}) };
+    const drawMeta = () => {
+      const keys = [...new Set([...(META_KEYS[$('fType').value] || []), ...Object.keys(meta)])];
+      $('fMeta').innerHTML = keys.map((k) => `<label>${esc(k)}</label><input data-k="${esc(k)}" value="${esc(meta[k] ?? '')}">`).join('') || '<span class="muted2 full">No standard fields for this type — use Notes.</span>';
+      $('fMeta').querySelectorAll('input').forEach((inp) => { inp.oninput = () => { meta[inp.dataset.k] = inp.value; }; });
+    };
+    $('fType').onchange = drawMeta; drawMeta();
+    const slug = () => ($('fLabel').value || $('fType').value).toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').replace(/^(\d)/, 'S_$1').slice(0, 60);
+    $('fSecret').onchange = () => { $('fNew').hidden = $('fSecret').value !== '__new'; if (!$('fNew').hidden && !$('nName').value) $('nName').value = slug(); };
+    $('nName').oninput = () => { $('nName').value = $('nName').value.toUpperCase().replace(/[^A-Z0-9_]/g, '_'); };
+    $('fCancel').onclick = () => { if (i) { invSel = { kind: 'item', id: i.id }; openInv(); } else { invSel = null; close(); } };
+    $('iForm').onsubmit = async (e) => {
+      e.preventDefault();
+      const msg = $('fMsg'); msg.className = 'msg'; msg.textContent = 'Saving…';
+      try {
+        let secret = $('fSecret').value;
+        if (secret === '__new') {
+          if (!$('nName').value || !$('nVal').value) throw new Error('New secret needs a name and a value');
+          const s = await aa('vault.create', { name: $('nName').value, value: $('nVal').value, description: `${TYPE_NAME[$('fType').value]}: ${$('fLabel').value}`, allowedHosts: $('nHosts').value });
+          $('nVal').value = ''; secret = s.name; vaultNames = null;
+        }
+        const cleanMeta = Object.fromEntries(Object.entries(meta).map(([k, v]) => [k, String(v).trim()]).filter(([, v]) => v));
+        if (cleanMeta.port && /^\d+$/.test(cleanMeta.port)) cleanMeta.port = +cleanMeta.port;
+        const set = { type: $('fType').value, label: $('fLabel').value, provider: $('fProv').value, geo: $('fGeo').value, cost_month: $('fCost').value === '' ? null : +$('fCost').value,
+          currency: $('fCur').value, status: $('fStatus').value, capacity: $('fCap').value === '' ? null : +$('fCap').value, secret_ref: secret || null, meta: cleanMeta, notes: $('fNotes').value };
+        if (i) { await aa('state.inventory_update', { id: i.id, set }); invSel = { kind: 'item', id: i.id }; }
+        else { const it = await aa('state.inventory_add', set); invSel = { kind: 'item', id: it.id }; }
+        await refresh(true); openInv();
+      } catch (err) { msg.className = 'msg bc'; msg.textContent = err.message; }
+    };
+    $('fLabel').focus();
+  }
+
+  // ── gaps tab
+  function renderGapKpis() {
+    const g = data.gaps || { requirements: [], warnings: [] };
+    const reqs = g.requirements || [];
+    if (!reqs.some((r) => r.id === gapReq)) gapReq = (reqs.find((r) => r.missing_count) || reqs[0] || {}).id ?? null;
+    const w = g.warnings || [];
+    const count = (k) => w.filter((x) => x.kind === k).length;
+    $('gapKpis').innerHTML = reqs.map((r) => {
+      const free = candidates(r.type, null).length;
+      return `<div class="kpi click${r.id === gapReq ? ' on' : ''}" data-r="${r.id}"><div class="lbl tl">${TYPE_IC[r.type] || TYPE_IC.other}${esc(TYPE_NAME[r.type] || r.type)} · ${esc(r.purpose)}</div>
+        <div class="big num ${r.missing_count ? 'wc' : 'okc'}">${r.missing_count ? r.missing_count : '✓'}<small>${r.missing_count ? `of ${r.total} ${r.scope}s missing` : `all ${r.total} ${r.scope}s covered`}</small></div>
+        <div class="sub num"><span>${r.count > 1 ? `${r.count} per ` : 'per '}${esc(r.scope)}${r.platform !== '*' ? ` · ${esc(CH.platformName(r.platform))}` : ''}${r.geo_match ? ' · same country' : ''}</span><span>${free} free</span></div></div>`;
+    }).join('') + `<div class="kpi"><div class="lbl">Warnings</div><div class="big num ${w.length ? 'wc' : ''}">${w.length}</div><div class="sub num"><span>${count('geo_mismatch')} geo mismatch</span><span>${count('capacity')} over capacity</span><span>${count('bad_status')} broken/retired bound</span></div></div>`;
+    $('gapKpis').querySelectorAll('.kpi.click').forEach((k) => { k.onclick = () => { gapReq = +k.dataset.r; render(); }; });
+  }
+  function renderGaps() {
+    renderGapKpis();
+    const g = data.gaps || { requirements: [], warnings: [] };
+    const r = (g.requirements || []).find((x) => x.id === gapReq);
+    const miss = r ? r.missing : [];
+    const countries = [...new Set(miss.map((m) => m.country).filter(Boolean))].sort();
+    const cats = [...new Set(miss.map((m) => m.category).filter(Boolean))].sort();
+    $('gCountry').innerHTML = '<option value="all">All countries</option>' + countries.map((c) => `<option value="${esc(c)}" ${GF.country === c ? 'selected' : ''}>${CH.flag(c)} ${esc(c)} · ${miss.filter((m) => m.country === c).length}</option>`).join('');
+    $('gCat').innerHTML = '<option value="all">All categories</option>' + cats.map((c) => `<option ${GF.cat === c ? 'selected' : ''}>${esc(c)}</option>`).join('');
+    const rows = miss.filter((m) => (GF.country === 'all' || m.country === GF.country) && (GF.cat === 'all' || m.category === GF.cat)
+      && (!GF.q || GF.q.split(/\s+/).every((w) => [m.label, m.persona, m.city, m.category, (personaById(m.persona) || {}).name, (personaById(m.persona) || {}).niche].join(' ').toLowerCase().includes(w))));
+    $('gShown').textContent = r ? `${rows.length} of ${miss.length} missing` : '';
+    const free = r ? candidates(r.type, null).length : 0;
+    $('gAuto').hidden = !canWrite() || !r || !r.missing_count;
+    $('gAuto').disabled = !free;
+    $('gAuto').title = free ? `Bind free ${TYPE_NAME[r.type] || ''} items to the missing ${r.scope}s${r.geo_match ? ' (same country only)' : ''}, least-used first` : 'No free items of this type — add some in Inventory';
+    const warns = g.warnings || [];
+    const wHtml = warns.length ? `<div class="warns"><div class="wh">⚠ ${warns.length} warning${warns.length > 1 ? 's' : ''}</div>${warns.slice(0, 50).map((w) => `<div class="wr"><span class="kind">${esc(w.kind.replace('_', ' '))}</span><span style="flex:1">${esc(w.message)}</span>${w.item_id ? `<button class="btn sm" data-item="${w.item_id}">Open item</button>` : ''}${canWrite() && w.binding_id ? `<button class="btn sm" data-unbind="${w.binding_id}">Unbind</button>` : ''}</div>`).join('')}</div>` : '';
+    let body;
+    if (!r) body = '<div class="empty">No requirements. Agents add them with requirement_add (see SCHEMA.md).</div>';
+    else if (!r.missing_count) body = `<div class="empty">Every ${esc(r.scope)} has its ${esc(TYPE_NAME[r.type] || r.type)} (${esc(r.purpose)}). ✓</div>`;
+    else {
+      const persona = r.scope === 'persona';
+      const tr = (m) => {
+        const p = personaById(m.persona) || {};
+        const cands = candidates(r.type, r.geo_match ? m.country : null, m.platform).filter((c) => !r.geo_match || c.match >= 0).slice(0, 40);
+        return `<tr><td><div class="ti"><span class="ava" style="width:24px;height:24px;font-size:13px">${esc(m.emoji || p.emoji || '👤')}</span><span><b class="chip0" data-p="${esc(m.persona)}" data-pl="${esc(persona ? '' : m.platform || '')}" style="cursor:pointer">${esc(m.label)}</b><span class="s2">${esc([p.name, p.niche].filter(Boolean).join(' · '))}</span></span></div></td>
+          <td>${esc(`${CH.flag(m.country)} ${m.country || '—'}`)}</td><td>${esc(m.city || '—')}</td><td class="muted2">${esc(m.category || '')}</td><td class="num">${m.have}/${m.need}</td>
+          <td>${canWrite() ? (cands.length ? `<div class="gsel"><select data-s="${esc(m.subject_type)}:${esc(m.subject_id)}">${cands.map((c) => `<option value="${c.i.id}">${esc(candLabel(c))}</option>`).join('')}</select><button class="btn sm" data-bind="${esc(m.subject_type)}:${esc(m.subject_id)}">Bind</button></div>` : `<span class="muted2">no free ${esc(TYPE_NAME[r.type] || r.type)}${r.geo_match && m.country ? ` in ${esc(m.country)}` : ''}</span>`) : ''}</td></tr>`;
+      };
+      body = `<table class="it"><thead><tr><th>${persona ? 'Persona' : 'Channel'}</th><th>Country</th><th>City</th><th>Category</th><th>Has</th><th>${canWrite() ? 'Quick bind' : ''}</th></tr></thead><tbody>${rows.map(tr).join('') || '<tr><td colspan="6" class="empty">Nothing matches the filters.</td></tr>'}</tbody></table>`;
+    }
+    const old = $('view').querySelector('.ivw'); const top = old ? old.scrollTop : 0;
+    $('view').innerHTML = `<div class="ivw">${wHtml}${body}</div>`;
+    const v = $('view').querySelector('.ivw'); v.scrollTop = top;
+    v.onclick = async (e) => {
+      const who = e.target.closest('[data-p]');
+      if (who && who.classList.contains('chip0')) return gotoSubject(who.dataset.p, who.dataset.pl || null);
+      const it = e.target.closest('[data-item]');
+      if (it) { tab = 'inventory'; store.set('channels.tab', tab); invSel = { kind: 'item', id: +it.dataset.item }; render(); return openInv(); }
+      const ub = e.target.closest('[data-unbind]');
+      if (ub) return mutate('inventory_unbind', { binding_id: +ub.dataset.unbind }).catch(() => {});
+      const b = e.target.closest('[data-bind]');
+      if (b) {
+        const [st, ...rest] = b.dataset.bind.split(':'); const sid = rest.join(':');
+        const selEl = v.querySelector(`select[data-s="${CSS.escape(b.dataset.bind)}"]`);
+        b.disabled = true;
+        await mutate('inventory_bind', { item_id: +selEl.value, subject_type: st, subject_id: sid, purpose: r.purpose }).catch(() => { b.disabled = false; });
+      }
+    };
+  }
+
+  // ── bound inventory in the persona / channel panels
+  function invSection(p, c) {
+    const own = c ? c.inventory : p.inventory;
+    const inherited = c ? p.inventory : [];
+    const missing = c ? [...new Set([...p.gaps, ...c.gaps])] : p.gaps;
+    const row = (x, via) => `<div class="ir">${TYPE_IC[x.type] || TYPE_IC.other}<div><div>${esc(x.label)}${x.provider ? ` <span class="m">· ${esc(x.provider)}</span>` : ''}</div><div class="m">${esc([TYPE_NAME[x.type], x.purpose, x.geo && `${CH.flag(geoCC(x.geo))} ${x.geo}`, x.ip, via].filter(Boolean).join(' · '))}${x.status !== 'active' ? ` · <span class="${x.status === 'broken' ? 'bc' : ''}">${esc(x.status)}</span>` : ''}${x.type === 'proxy' && p.country && geoCC(x.geo) && geoCC(x.geo) !== String(p.country).toUpperCase() ? ' · <span class="wc">⚠ not in ' + esc(p.country) + '</span>' : ''}${x.secret_ref ? ` · ${x.secret === 'ok' ? '<span class="okc">🔑 ' + esc(x.secret_ref) + '</span>' : '<span class="wc">⚠ ' + esc(x.secret_ref) + ' missing</span>'}` : ''}</div></div>${via ? '' : canWrite() ? `<button class="xb" data-unbind="${x.binding}" title="Unbind">×</button>` : ''}</div>`;
+    // On a persona: also what its channels hold (accounts, per-channel keys), with unbind.
+    const perChannel = c ? [] : p.channels.flatMap((ch) => ch.inventory.map((x) => ({ ...x, on: CH.platformName(ch.platform) })));
+    const rows = own.map((x) => row(x, '')).concat(inherited.map((x) => row(x, 'via persona'))).concat(perChannel.map((x) => row({ ...x, purpose: `${x.purpose} on ${x.on}` }, ''))).join('');
+    const types = [...new Set([...missing, ...TYPES])].filter((t) => c || t !== 'account');
+    return `<div class="sec" id="invSec"><h3>Inventory ${missing.length ? `<span class="gb" title="Required but missing">⚠ missing ${esc(missing.map((t) => TYPE_NAME[t] || t).join(', '))}</span>` : own.length || inherited.length ? '<span class="gb okb">✓ complete</span>' : ''}<span class="r num">${own.length + inherited.length + perChannel.length} bound</span></h3>
+      ${rows ? `<div class="rows">${rows}</div>` : '<div class="note">Nothing bound yet.</div>'}
+      ${canWrite() ? `<div style="margin-top:8px"><button class="btn sm" id="attach">+ Attach inventory</button></div>
+      <div class="box" id="attachBox" hidden><div class="form">
+        <label for="aType">Type</label><select id="aType">${types.map((t) => `<option value="${t}">${esc(TYPE_NAME[t])}${missing.includes(t) ? ' — missing' : ''}</option>`).join('')}</select>
+        <label for="aItem">Item</label><select id="aItem"></select>
+        <label for="aPurpose">Purpose</label><select id="aPurpose">${PURPOSES.map((x) => `<option>${x}</option>`).join('')}</select>
+        ${c ? `<label for="aFor">For</label><select id="aFor"><option value="persona">the persona (all its channels)</option><option value="channel">this ${esc(CH.platformName(c.platform))} channel only</option></select>` : ''}
+        <span></span><div class="inl"><button class="btn primary sm" id="aGo">Bind</button><span class="msg" id="aMsg"></span></div></div></div>` : ''}</div>`;
+  }
+  function wireInvSection(p, c) {
+    panel.querySelectorAll('#invSec [data-unbind]').forEach((b) => { b.onclick = () => mutate('inventory_unbind', { binding_id: +b.dataset.unbind }, $('msg')).catch(() => {}); });
+    if (!$('attach')) return;
+    const country = String(p.country || '').toUpperCase();
+    const fillItems = () => {
+      const t = $('aType').value;
+      const cs = candidates(t, country, c && c.platform);
+      $('aItem').innerHTML = cs.length ? cs.slice(0, 80).map((x) => `<option value="${x.i.id}">${esc(candLabel(x))}</option>`).join('') : `<option value="">No free ${esc(TYPE_NAME[t])} — add one in Inventory</option>`;
+      $('aPurpose').value = DEF_PURPOSE[t] || 'other';
+      if ($('aFor')) { $('aFor').value = t === 'api_key' || t === 'account' ? 'channel' : 'persona'; $('aFor').disabled = t === 'account'; }
+    };
+    $('attach').onclick = () => { $('attachBox').hidden = !$('attachBox').hidden; if (!$('attachBox').hidden) fillItems(); };
+    $('aType').onchange = fillItems;
+    $('aGo').onclick = () => {
+      if (!$('aItem').value) return;
+      const forChannel = c && $('aFor').value === 'channel';
+      mutate('inventory_bind', { item_id: +$('aItem').value, subject_type: forChannel ? 'channel' : 'persona', subject_id: forChannel ? String(c.id) : p.id, purpose: $('aPurpose').value }, $('aMsg')).catch(() => {});
+    };
+  }
+
   // ── events
-  function setHash() { history.replaceState(null, '', sel.kind === 'p' ? `#p=${encodeURIComponent(sel.id)}` : `#c=${encodeURIComponent(sel.id)}:${encodeURIComponent(sel.platform)}`); }
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && sel) close(); });
+  function setHash() { if (!sel) return; history.replaceState(null, '', sel.kind === 'p' ? `#p=${encodeURIComponent(sel.id)}` : `#c=${encodeURIComponent(sel.id)}:${encodeURIComponent(sel.platform)}`); }
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && (sel || invSel) && !e.target.closest('input, textarea, select')) close(); });
+  $('tabSeg').onclick = (e) => { const b = e.target.closest('button'); if (!b || b.dataset.t === tab) return; tab = b.dataset.t; store.set('channels.tab', tab); close(); render(); };
+  document.querySelectorAll('.sic').forEach((x) => { x.innerHTML = I.search; });
+  $('iq').oninput = () => { INV.q = $('iq').value.trim().toLowerCase(); render(); };
+  $('iType').onchange = () => { INV.type = $('iType').value; render(); };
+  $('iStatus').onchange = () => { INV.status = $('iStatus').value; render(); };
+  $('iGeo').onchange = () => { INV.geo = $('iGeo').value; render(); };
+  $('iProv').onchange = () => { INV.provider = $('iProv').value; render(); };
+  $('iAdd').onclick = () => { sel = null; invSel = { kind: 'new' }; openInv(); };
+  $('gq').oninput = () => { GF.q = $('gq').value.trim().toLowerCase(); render(); };
+  $('gCountry').onchange = () => { GF.country = $('gCountry').value; render(); };
+  $('gCat').onchange = () => { GF.cat = $('gCat').value; render(); };
+  $('gAuto').onclick = () => {
+    const r = ((data.gaps && data.gaps.requirements) || []).find((x) => x.id === gapReq); if (!r) return;
+    twoStep($('gAuto'), `Bind free ${TYPE_NAME[r.type] || r.type} to up to ${r.missing_count} ${r.scope}s?`, async () => {
+      $('gAuto').disabled = true;
+      try { const res = await mutate('inventory_autobind', { requirement_id: r.id }); toast(`Bound ${res.bound} · still missing ${res.unassigned_count}${r.geo_match && res.unassigned_count ? ' (no free item in their country)' : ''}`); } catch { /* toasted */ }
+      $('gAuto').disabled = false;
+    });
+  };
   $('viewSeg').onclick = (e) => { const b = e.target.closest('button'); if (!b) return; view = b.dataset.v; store.set('channels.view2', view); render(); if (sel) markSel(); };
   $('q').oninput = () => { filter.q = $('q').value.trim().toLowerCase(); render(); };
   $('fStage').onchange = () => { filter.stage = $('fStage').value; render(); };
@@ -787,6 +1286,8 @@
   $('reveal').onclick = () => aa('fs.reveal', { path: '' }).catch((e) => { $('upd').textContent = e.message; });
   function fromHash() {
     const h = decodeURIComponent(location.hash.slice(1)); let m;
+    if ((m = /^tab=(channels|inventory|gaps)$/.exec(h))) { tab = m[1]; store.set('channels.tab', tab); close(); render(); return; }
+    if (/^(p|c|stage)=/.test(h) && tab !== 'channels') { tab = 'channels'; render(); }
     if ((m = /^p=(.+)$/.exec(h))) { sel = { kind: 'p', id: m[1] }; openSel(); }
     else if ((m = /^c=([^:]+):(.+)$/.exec(h))) { sel = { kind: 'c', id: m[1], platform: m[2] }; openSel(); }
     else if ((m = /^stage=(.+)$/.exec(h)) && CH.STAGES.includes(m[1])) { filter.stage = m[1]; render(); }

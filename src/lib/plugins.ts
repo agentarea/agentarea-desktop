@@ -23,7 +23,8 @@ export interface Plugin {
   /** optional page shown as a section in the app sidebar */
   sidebar: string | null;
   /** extra bridge powers: "fs" = read (and reveal in Finder) files in a folder the user grants,
-   *  "cloud" = read the AgentArea workspace's files under `cloudRoot` */
+   *  "cloud" = read the AgentArea workspace's files under `cloudRoot`,
+   *  "state" = the Channels network database (state.*) and creating vault secrets (vault.*) */
   permissions: string[];
   /** the granted folder, for "fs" plugins */
   root: string | null;
@@ -101,6 +102,16 @@ function str(params: unknown, key: string): string {
   const v = param(params, key);
   if (typeof v !== 'string') throw new Error(`"${key}" must be a string`);
   return v;
+}
+
+/** Throws unless the plugin is enabled and declared "state" (re-reads the list once: manifests change on disk). */
+async function requireState(pluginId: string): Promise<void> {
+  const ok = () => {
+    const p = usePlugins.getState().plugins.find((x) => x.id === pluginId);
+    return !!p?.enabled && p.permissions.includes('state');
+  };
+  if (!ok()) await usePlugins.getState().reload();
+  if (!ok()) throw new Error(`plugin ${pluginId} has no "state" permission`);
 }
 
 /** The plugin's cloud root, if it is enabled and declared "cloud". */
@@ -185,6 +196,29 @@ export async function runBridgeMethod(pluginId: string, method: string, params: 
       return { ok: true };
     }
 
+    // ── vault: create / list secrets for "state" plugins (inventory credentials).
+    // Values go straight to the Keychain; nothing here ever returns one.
+    case 'vault.list': {
+      await requireState(pluginId);
+      const { listSecrets } = await import('./vault');
+      return (await listSecrets()).map((s) => ({ name: s.name, description: s.description ?? '', allowedHosts: s.allowedHosts }));
+    }
+
+    case 'vault.create': {
+      await requireState(pluginId);
+      const { createSecret, parseHosts } = await import('./vault');
+      const value = str(params, 'value');
+      if (!value) throw new Error('"value" is empty');
+      const hosts = param(params, 'allowedHosts');
+      const s = await createSecret({
+        name: str(params, 'name'),
+        description: typeof param(params, 'description') === 'string' ? (param(params, 'description') as string) : undefined,
+        allowedHosts: Array.isArray(hosts) ? hosts.filter((h): h is string => typeof h === 'string') : parseHosts(typeof hosts === 'string' ? hosts : ''),
+        value,
+      });
+      return { name: s.name, description: s.description ?? '', allowedHosts: s.allowedHosts };
+    }
+
     // ── threads
     case 'threads.attach': {
       // Attach a file from the plugin's folder to a thread (default: the open one).
@@ -241,6 +275,13 @@ export async function runBridgeMethod(pluginId: string, method: string, params: 
       return { id: useAppStore.getState().selectedId };
 
     default:
+      // ── state: the Channels network database (src-tauri/src/state_db.rs), for
+      // plugins that declared "state". Rust checks the permission and audits
+      // writes as `plugin:<id>`: state.query {sql, params}, state.snapshot,
+      // state.rev, state.inventory_bind, state.channel_update, …
+      if (method.startsWith('state.')) {
+        return invoke('state_call', { method: method.slice(6), params: params ?? {}, plugin: pluginId });
+      }
       throw new Error(`Unknown method: ${method}`);
   }
 }

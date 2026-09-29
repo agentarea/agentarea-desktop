@@ -1904,7 +1904,7 @@ fn unbind(conn: &Connection, actor: &str, p: &Value) -> R<Value> {
 }
 
 /// Cover one requirement's missing subjects from free items of its type:
-/// status active, room under capacity, and (for geo_match) the persona's
+/// status active (then reserved), room under capacity, and (for geo_match) the persona's
 /// country. Spreads over the least-used items. `limit` caps new bindings.
 fn autobind(conn: &Connection, actor: &str, p: &Value) -> R<Value> {
     let req_id = p.get("requirement_id").and_then(num).map(|n| n as i64).ok_or("\"requirement_id\" is required")?;
@@ -1914,12 +1914,13 @@ fn autobind(conn: &Connection, actor: &str, p: &Value) -> R<Value> {
     let typ = req["type"].as_str().unwrap_or("").to_string();
     let purpose = req["purpose"].as_str().unwrap_or("").to_string();
     let geo_match = req["geo_match"].as_i64() == Some(1);
-    // candidates: (id, geo country, capacity, used)
-    let mut cands: Vec<(i64, Option<String>, Option<i64>, i64)> = Vec::new();
-    for i in query_json(conn, "SELECT id, geo, capacity FROM inventory_items WHERE type = ?1 AND status = 'active' ORDER BY id", [&typ])? {
+    // candidates: (id, geo country, capacity, used, account platform)
+    let mut cands: Vec<(i64, Option<String>, Option<i64>, i64, Option<String>)> = Vec::new();
+    for i in query_json(conn, "SELECT id, geo, capacity, meta FROM inventory_items WHERE type = ?1 AND status IN ('active', 'reserved') ORDER BY status = 'reserved', id", [&typ])? {
         let id = i["id"].as_i64().unwrap_or_default();
         let used = active_subjects(conn, id)?.len() as i64;
-        cands.push((id, geo_country(i["geo"].as_str().unwrap_or("")), i["capacity"].as_i64(), used));
+        let platform = i["meta"]["platform"].as_str().filter(|p| !p.is_empty()).map(str::to_ascii_lowercase);
+        cands.push((id, geo_country(i["geo"].as_str().unwrap_or("")), i["capacity"].as_i64(), used, platform));
     }
     let mut bound = Vec::new();
     let mut unassigned = Vec::new();
@@ -1930,12 +1931,17 @@ fn autobind(conn: &Connection, actor: &str, p: &Value) -> R<Value> {
             continue;
         }
         let want = m["country"].as_str().filter(|c| !c.is_empty()).map(str::to_ascii_uppercase);
+        let on = m["platform"].as_str().map(str::to_string);
         let mut need = m["need"].as_i64().unwrap_or(1) - m["have"].as_i64().unwrap_or(0);
         while need > 0 {
             let pick = cands
                 .iter_mut()
-                .filter(|(_, cc, cap, used)| cap.is_none_or(|c| *used < c) && (!geo_match || want.is_none() || *cc == want))
-                .min_by_key(|(id, _, _, used)| (*used, *id));
+                .filter(|(_, cc, cap, used, plat)| {
+                    cap.is_none_or(|c| *used < c)
+                        && (!geo_match || want.is_none() || *cc == want)
+                        && (typ != "account" || plat.is_none() || *plat == on)
+                })
+                .min_by_key(|(_, _, _, used, _)| *used);
             let Some(c) = pick else { break };
             let r = bind(conn, actor, &json!({ "item_id": c.0, "subject_type": st, "subject_id": sid, "purpose": purpose }))?;
             if r["already"].as_bool() != Some(true) {
@@ -2708,6 +2714,11 @@ mod tests {
         db.call("user", "requirement_add", &json!({ "platform": "tiktok", "type": "account", "scope": "channel" })).unwrap();
         let g = db.call("user", "gaps", &json!({ "type": "account" })).unwrap();
         assert_eq!(g["requirements"][0]["missing_count"], 0);
+        // autobind matches platforms: a new x account goes to the x channel only
+        db.call("user", "inventory_add", &json!({ "type": "account", "label": "X · a", "meta": { "platform": "x", "username": "a" } })).unwrap();
+        let req = db.call("user", "requirement_add", &json!({ "platform": "*", "type": "account", "scope": "channel" })).unwrap();
+        let r = db.call("user", "inventory_autobind", &json!({ "requirement_id": req["id"] })).unwrap();
+        assert_eq!((r["bound"].as_i64(), r["unassigned_count"].as_i64()), (Some(1), Some(0)));
         cleanup(&root);
     }
 

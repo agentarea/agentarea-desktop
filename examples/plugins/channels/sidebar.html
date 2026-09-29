@@ -40,11 +40,19 @@
   'use strict';
   const rootEl = document.getElementById('root');
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
-  let sig = '';
+  let sig = '', snapRev = null, snapCache = null;
+  const io = {
+    read: (path) => aa('fs.read', { path }),
+    snapshot: async () => {
+      const { rev } = await aa('state.rev');
+      if (rev !== snapRev || !snapCache) { snapCache = await aa('state.snapshot'); snapRev = rev; }
+      return snapCache;
+    },
+  };
 
   async function refresh() {
     try {
-      const raw = await CH.load({ list: async () => (await aa('fs.list', { path: '' })).filter((e) => e.dir).map((e) => e.name), read: (path) => aa('fs.read', { path }) });
+      const raw = await CH.load(io);
       if (raw.sig === sig) return;
       sig = raw.sig;
       render(CH.join(raw, Date.now()));
@@ -69,9 +77,14 @@
       html += `<div class="row" data-stage="${s}"><span class="dot" style="background:var(--s-${s})"></span><span class="nm">${CH.STAGE_LABEL[s]}</span><span class="n num">${t.byStage[s] || 0}</span></div>`;
     }
     if (t.next) html += `<div class="g">Next post: ${esc(CH.fmtWhen(t.next))}</div>`;
+    const inv = d.inventory || [], reqs = (d.gaps && d.gaps.requirements) || [], warns = ((d.gaps && d.gaps.warnings) || []).length;
+    const missing = reqs.reduce((a, r) => a + r.missing_count, 0);
+    html += `<div class="g">Inventory</div>
+      <div class="row" data-tab="inventory"><span class="dot" style="background:var(--muted)"></span><span class="nm">Items · ${inv.filter((i) => (i.bindings || []).length).length} in use</span><span class="n num">${inv.length}</span></div>
+      <div class="row" data-tab="gaps"><span class="dot" style="background:${missing || warns ? '#d97706' : '#16a34a'}"></span><span class="nm">Gaps${warns ? ` · ${warns} warnings` : ''}</span><span class="n num">${missing}</span></div>`;
     rootEl.innerHTML = html;
     document.getElementById('sum').onclick = () => aa('ui.open', { hash: '' });
-    rootEl.querySelectorAll('.row').forEach((r) => { r.onclick = () => aa('ui.open', { hash: `stage=${r.dataset.stage}` }); });
+    rootEl.querySelectorAll('.row').forEach((r) => { r.onclick = () => aa('ui.open', { hash: r.dataset.tab ? `tab=${r.dataset.tab}` : `stage=${r.dataset.stage}` }); });
   }
 
   setInterval(() => { if (!document.hidden) refresh(); }, 5000);

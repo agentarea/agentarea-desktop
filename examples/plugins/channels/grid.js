@@ -88,9 +88,12 @@
   async function load(io) {
     const errors = [];
     let snap = {}, snapSig = '';
+    let viaState = false;
     if (io.snapshot) {
-      try { snap = await io.snapshot(); snapSig = String(snap.rev || ''); } catch (e) { errors.push(`state: ${e.message}`); }
-    } else {
+      // No "state" permission yet (or an older app): fall back to the export files.
+      try { snap = await io.snapshot(); snapSig = String(snap.rev || ''); viaState = true; } catch (e) { if (!io.read) errors.push(`state: ${e.message}`); }
+    }
+    if (!viaState && io.read) {
       const texts = await Promise.all(SNAPSHOT_FILES.map((f) => io.read(`export/${f}.json`).catch((e) => { if (f === 'channels' || f === 'personas') errors.push(`export/${f}.json: ${e.message}`); return ''; })));
       SNAPSHOT_FILES.forEach((f, i) => { try { snap[f] = json(texts[i], null); } catch (e) { errors.push(`export/${f}.json: ${e.message}`); } });
       snapSig = texts.join('\u0001');
@@ -103,8 +106,16 @@
       personas, channels: arr(snap.channels), metrics: arr(snap.metrics), posts: arr(snap.posts),
       inventory: arr(snap.inventory), bindings: arr(snap.bindings),
       gaps: snap.gaps && typeof snap.gaps === 'object' ? snap.gaps : { requirements: [], warnings: [], by_subject: {} },
-      errors, sig: snapSig + '\u0002' + texts.join('\u0001'),
+      errors, viaState, sig: snapSig + '\u0002' + texts.join('\u0001'),
     };
+  }
+
+  /** Country code of a geo string: "DE", "DE-BY", "PL / Warsaw", "Munich, DE" → "DE" / "PL"; else ''. */
+  function geoCountry(g) {
+    g = text(g); let m = /,\s*([A-Za-z]{2})\s*$/.exec(g);
+    if (m) return m[1].toUpperCase();
+    m = /^([A-Za-z]{2})(?![A-Za-z])/.exec(g);
+    return m ? m[1].toUpperCase() : '';
   }
 
   const DAY = 86400000;
@@ -135,7 +146,7 @@
     now = now || Date.now();
     const since = now - 30 * DAY;
     const byId = new Map();
-    const add = (id, init) => { if (!byId.has(id)) byId.set(id, { id, folder: null, name: id, niche: '', emoji: '👤', category: 'No persona folder', country: '', city: '', languages: [], audience: '', references: [], character: '', platforms: [], story: '', summary: '', cells: {}, ...init }); return byId.get(id); };
+    const add = (id, init) => { if (!byId.has(id)) byId.set(id, { id, folder: null, name: id, niche: '', emoji: '👤', category: 'No persona folder', country: '', city: '', languages: [], audience: '', references: [], character: '', platforms: [], story: '', summary: '', cells: {}, inventory: [], gaps: [], ...init }); return byId.get(id); };
     for (const p of data.personas) {
       const { meta, body } = frontMatter(p.text);
       let cfg = {};
@@ -150,6 +161,17 @@
         summary: meta.summary || (body.replace(/^#.*$/gm, '').trim().split(/\n\s*\n/)[0] || '').replace(/[*_`]/g, '').replace(/\s+/g, ' ').trim(),
       });
     }
+    // Inventory bound to personas / channels (a persona's items also serve its channels).
+    const invOf = new Map();
+    for (const it of data.inventory || []) {
+      for (const b of it.bindings || []) {
+        const k = `${b.subject_type}:${b.subject_id}`;
+        if (!invOf.has(k)) invOf.set(k, []);
+        invOf.get(k).push({ id: it.id, type: it.type, label: it.label, provider: it.provider, geo: it.geo, status: it.status, ip: (it.meta && it.meta.ip) || '', secret: it.secret, secret_ref: it.secret_ref, purpose: b.purpose, binding: b.id, since: b.since });
+      }
+    }
+    const bySubject = (data.gaps && data.gaps.by_subject) || {};
+    for (const p of byId.values()) { p.inventory = invOf.get(`persona:${p.id}`) || []; p.gaps = bySubject[`persona:${p.id}`] || []; }
     for (const r of data.channels) {
       if (!r) continue;
       const pid = low(r.persona), plat = low(r.platform);
@@ -164,6 +186,7 @@
         tasks: (Array.isArray(r.tasks) ? r.tasks : []).filter((t) => t && t.type).map((t) => ({ type: low(t.type), cadence: text(t.cadence), notes: text(t.notes) })),
         reach: null, cost: null, currency: DEFAULT_CURRENCY, followers: null, published30: null, lastMetric: '',
         posts: [], scheduled: 0, next: null,
+        id: r.id, inventory: invOf.get(`channel:${r.id}`) || [], gaps: bySubject[`channel:${r.id}`] || [],
       };
     }
     // metrics.csv: each row = what happened in the period ending on `date` (daily rows recommended).
@@ -203,7 +226,7 @@
       p.channels = Object.values(p.cells);
       p.budget = sumMoney(p.channels.map((c) => c.budget));
       // Exit (proxy) countries from network.geo "City, CC"; flag when any differs from the persona's country.
-      p.proxyCountries = [...new Set(p.channels.map((c) => (/,\s*([A-Za-z]{2})\s*$/.exec(c.network.geo) || [])[1]).filter(Boolean).map((x) => x.toUpperCase()))];
+      p.proxyCountries = [...new Set(p.channels.map((c) => geoCountry(c.network.geo)).filter(Boolean))];
       p.proxyMismatch = !!p.country && p.proxyCountries.some((x) => x !== String(p.country).toUpperCase());
     }
     const count = new Map();
@@ -216,7 +239,9 @@
     const order = new Map();
     data.channels.forEach((r, i) => { const id = r && low(r.persona); if (id && !order.has(id)) order.set(id, i); });
     const personas = [...byId.values()].sort((a, b) => (order.has(a.id) ? order.get(a.id) : 1e9) - (order.has(b.id) ? order.get(b.id) : 1e9) || a.name.localeCompare(b.name, 'ru'));
-    return { personas, platforms, platformCount: count, errors: data.errors || [] };
+    for (const p of personas) { if (!p.inventory) p.inventory = []; if (!p.gaps) p.gaps = []; }
+    return { personas, platforms, platformCount: count, errors: data.errors || [], inventory: data.inventory || [], bindings: data.bindings || [],
+      gaps: data.gaps || { requirements: [], warnings: [], by_subject: {} }, viaState: !!data.viaState };
   }
 
   /** Sum budget-shaped objects per currency: { [cur]: { total, items } }. */
@@ -303,6 +328,7 @@
     BUDGET_KEYS, sumMoney, STAGES, STAGE_LABEL, POST_STATUSES, DEFAULT_CURRENCY, DEFAULT_KPI, PLATFORM_ORDER, ROLES,
     frontMatter, parseCsv, amount, load, join, totals,
     fmtNum, fmtPct, fmtMoney, fmtMoneyMap, fmtWhen, platformIcon, platformName, flag,
+    currency: (c) => currencyOf({ currency: c }), geoCountry,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.CH = api;

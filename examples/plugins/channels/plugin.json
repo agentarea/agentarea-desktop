@@ -1,11 +1,12 @@
 {
   "id": "channels",
   "title": "Channels",
-  "description": "A network of AI-persona channels (Instagram, Telegram, TikTok, YouTube, VK…) for hypothesis validation: health index, reach and costs, read from files the agents maintain in ~/AgentArea/channels.",
+  "description": "A network of AI-persona channels (TikTok, Instagram, YouTube, Facebook, X, Threads, Telegram) for hypothesis validation, plus the inventory that runs them (proxies, phones, emails, device profiles): reach, costs, gaps. Data: ~/AgentArea/state.db; SOUL.md files in ~/AgentArea/channels.",
   "entry": "index.html",
   "sidebar": "sidebar.html",
   "permissions": [
-    "fs"
+    "fs",
+    "state"
   ],
   "icon": "radio-tower"
 }
