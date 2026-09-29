@@ -30,3 +30,6 @@ dist-ssr
 # Tauri generated
 src-tauri/gen/schemas
 src-tauri/target
+
+# Private plugins (not for the public repo)
+examples/plugins/channels/
