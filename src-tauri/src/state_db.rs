@@ -474,15 +474,8 @@ impl StateDb {
         let snap = self.read(|c| snapshot(c, &secrets))?;
         let dir = self.export_dir();
         std::fs::create_dir_all(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
-        for (file, key) in [
-            ("personas.json", "personas"),
-            ("channels.json", "channels"),
-            ("inventory.json", "inventory"),
-            ("bindings.json", "bindings"),
-            ("posts.json", "posts"),
-            ("metrics.json", "metrics"),
-            ("gaps.json", "gaps"),
-        ] {
+        for file in EXPORT_FILES {
+            let key = file.trim_end_matches(".json");
             let body = serde_json::to_string_pretty(&snap[key]).map_err(e)?;
             write_readonly(&dir.join(file), &body)?;
         }
