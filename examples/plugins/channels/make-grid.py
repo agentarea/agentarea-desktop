@@ -2,7 +2,8 @@
 
     python3 make-grid.py [data-folder]      # default ~/AgentArea/channels
 
-The page picks its file source itself: bridge inside the app, fetch when opened directly
+The page picks its data source itself: the "state" bridge inside the app; opened directly it
+fetches the read-only snapshots state.db exports to export/*.json (plus <handle>/SOUL.md)
 (`cd ~/AgentArea/channels && python3 -m http.server 8765` → http://localhost:8765/grid.html).
 """
 import os, sys
