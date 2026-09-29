@@ -1073,7 +1073,7 @@ mod tests {
         assert_eq!(post(&url, Some(&token), "POST", init).0, 401, "revoked when the turn ends");
 
         // /data takes only data tokens, and vice versa.
-        let data = mcp.issue_data_token(DataTurn::new(vec![], None, Redactor::default()));
+        let data = mcp.issue_data_token(DataTurn::new("t", vec![], None, Redactor::default()));
         let secrets = mcp.issue_token("t1");
         let data_url = mcp.data_url();
         let (status, body) = post(&data_url, Some(&data.token), "POST", init);

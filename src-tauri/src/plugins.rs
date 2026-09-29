@@ -234,6 +234,16 @@ pub struct FsEntry {
     dir: bool,
 }
 
+/// Refuse unless `id` is an installed, enabled plugin that declared `permission`.
+pub fn require_permission(id: &str, permission: &str) -> Result<(), String> {
+    list_plugins()?
+        .into_iter()
+        .find(|p| p.id == id)
+        .filter(|p| p.enabled && p.permissions.iter().any(|x| x == permission))
+        .map(|_| ())
+        .ok_or_else(|| format!("plugin {id} has no \"{permission}\" permission"))
+}
+
 /// An installed, enabled plugin that declared "fs".
 fn fs_plugin(id: &str) -> Result<Plugin, String> {
     list_plugins()?

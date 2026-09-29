@@ -78,14 +78,16 @@ pub fn live_token(api_base: &str, fallback: &str) -> String {
 /// One turn's data state; lives as long as the turn's bearer token.
 pub struct DataTurn {
     pub sources: Vec<Source>,
+    /// The thread (session) id: state writes are audited as `agent:<thread>`.
+    thread: String,
     cloud: Option<CloudAccess>,
     redactor: Redactor,
     listing: Mutex<Option<(Instant, Listing)>>,
 }
 
 impl DataTurn {
-    pub fn new(sources: Vec<Source>, cloud: Option<CloudAccess>, redactor: Redactor) -> DataTurn {
-        DataTurn { sources, cloud, redactor, listing: Mutex::new(None) }
+    pub fn new(thread: &str, sources: Vec<Source>, cloud: Option<CloudAccess>, redactor: Redactor) -> DataTurn {
+        DataTurn { sources, thread: thread.to_string(), cloud, redactor, listing: Mutex::new(None) }
     }
 }
 
@@ -143,7 +145,8 @@ pub fn agent_hint(sources: &[Source]) -> String {
     } else {
         hint.push_str(" Cloud files are unavailable: the user is not signed in to AgentArea.");
     }
-    hint.push_str(" list_sources (agentarea_data) repeats this list.");
+    hint.push_str(" list_sources (agentarea_data) repeats this list.\n");
+    hint.push_str(crate::state_db::AGENT_HINT);
     hint
 }
 
@@ -353,11 +356,19 @@ fn initialize_result(params: &Value) -> Value {
         "protocolVersion": version,
         "capabilities": { "tools": {} },
         "serverInfo": { "name": "agentarea-data", "version": env!("CARGO_PKG_VERSION") },
-        "instructions": "The thread's data sources. Local folders: read them with your own file tools by absolute path. Cloud (AgentArea workspace files, agentarea://files/<path>): cloud_list and cloud_read."
+        "instructions": "The thread's data sources. Local folders: read them with your own file tools by absolute path. Cloud (AgentArea workspace files, agentarea://files/<path>): cloud_list and cloud_read. Channels network state (~/AgentArea/state.db): state_query (read-only SQL) and the typed tools channel_update, persona_update, inventory_add/update/bind/unbind, post_upsert, metrics_add, inventory_gaps; every write is audited."
     })
 }
 
 fn tool_defs() -> Value {
+    let mut tools = file_tool_defs();
+    if let (Some(list), Value::Array(state)) = (tools.as_array_mut(), crate::state_db::mcp_tools()) {
+        list.extend(state);
+    }
+    tools
+}
+
+fn file_tool_defs() -> Value {
     json!([
         {
             "name": "list_sources",
@@ -393,7 +404,10 @@ fn call_tool(turn: &DataTurn, params: &Value) -> Result<Value, (i64, String)> {
         "list_sources" => Ok(serde_json::to_string_pretty(&turn.sources).unwrap_or_default()),
         "cloud_list" => cloud_list(turn, &args),
         "cloud_read" => cloud_read(turn, &args),
-        other => return Err((-32602, format!("unknown tool: {other}"))),
+        other => match crate::state_db::mcp_call(other, &args, &format!("agent:{}", turn.thread)) {
+            Some(out) => out,
+            None => return Err((-32602, format!("unknown tool: {other}"))),
+        },
     };
     let (text, is_error) = match out {
         Ok(t) => (turn.redactor.redact(&t), false),
@@ -523,7 +537,7 @@ mod tests {
 
     fn turn(cloud: Option<CloudAccess>) -> DataTurn {
         let roots = [local("LLM Wiki", "/w/wiki")];
-        DataTurn::new(sources(&roots, Path::new("/t"), cloud.as_ref().map(|_| ("Acme", &[][..]))), cloud, Redactor::new([("TOKEN", "sk-secret-value")]))
+        DataTurn::new("t", sources(&roots, Path::new("/t"), cloud.as_ref().map(|_| ("Acme", &[][..]))), cloud, Redactor::new([("TOKEN", "sk-secret-value")]))
     }
 
     fn call(t: &DataTurn, name: &str, args: Value) -> (String, bool) {
@@ -539,7 +553,10 @@ mod tests {
         assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
         let tools = handle_message(&t, &json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})).unwrap();
         let names: Vec<_> = tools["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["list_sources", "cloud_list", "cloud_read"]);
+        assert_eq!(names[..3], ["list_sources", "cloud_list", "cloud_read"]);
+        for state_tool in ["state_query", "channel_update", "persona_update", "inventory_add", "inventory_update", "inventory_bind", "inventory_unbind", "post_upsert", "metrics_add", "inventory_gaps"] {
+            assert!(names.contains(&state_tool), "{state_tool}");
+        }
         assert!(handle_message(&t, &json!({"jsonrpc":"2.0","method":"notifications/initialized"})).is_none());
         let unknown = handle_message(&t, &json!({"jsonrpc":"2.0","id":3,"method":"resources/list"})).unwrap();
         assert_eq!(unknown["error"]["code"], -32601);
@@ -660,7 +677,7 @@ mod tests {
         let srcs = sources(&roots, &cwd, Some(("Acme", &hints)));
         let hint = agent_hint(&srcs);
         let cloud = CloudAccess { api_base: base, token: "at-123".into(), workspace: Some("ws-1".into()) };
-        let data = server.issue_data_token(DataTurn::new(srcs, Some(cloud), Redactor::new([("TOKEN", "sk-secret-value")])));
+        let data = server.issue_data_token(DataTurn::new("t", srcs, Some(cloud), Redactor::new([("TOKEN", "sk-secret-value")])));
 
         let mut cmd = std::process::Command::new(crate::cli_bin(runner));
         if runner == "claude" {

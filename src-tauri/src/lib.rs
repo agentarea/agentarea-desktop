@@ -15,6 +15,7 @@ mod plugins;
 mod runners;
 mod secrets;
 mod secrets_mcp;
+pub mod state_db;
 mod vault;
 mod web;
 
@@ -463,7 +464,7 @@ fn agent_command(
     let secrets_turn = if secrets.is_empty() { None } else { server.as_ref().map(|s| (s.url(), s.issue_token(session_id))) };
     let data_turn = server
         .as_ref()
-        .map(|s| (s.data_url(), s.issue_data_token(data_mcp::DataTurn::new(sources.to_vec(), cloud, redactor.clone()))));
+        .map(|s| (s.data_url(), s.issue_data_token(data_mcp::DataTurn::new(session_id, sources.to_vec(), cloud, redactor.clone()))));
     // The AgentArea client endpoint: through the local proxy (live token) when
     // it runs, else directly with the token this turn got.
     let agentarea: Option<(String, Option<String>)> = match (a.mcp_url.clone(), a.token.clone()) {
@@ -749,6 +750,7 @@ pub fn run() {
             plugins::plugin_set_cloud_root,
             plugins::plugin_fs_list,
             plugins::plugin_fs_read,
+            state_db::state_call,
             local_mcp::local_mcp_list,
             local_mcp::local_mcp_install,
             local_mcp::local_mcp_uninstall,
