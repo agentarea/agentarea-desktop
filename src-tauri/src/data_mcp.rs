@@ -356,7 +356,7 @@ fn initialize_result(params: &Value) -> Value {
         "protocolVersion": version,
         "capabilities": { "tools": {} },
         "serverInfo": { "name": "agentarea-data", "version": env!("CARGO_PKG_VERSION") },
-        "instructions": "The thread's data sources. Local folders: read them with your own file tools by absolute path. Cloud (AgentArea workspace files, agentarea://files/<path>): cloud_list and cloud_read. Channels network state (~/AgentArea/state.db): state_query (read-only SQL) and the typed tools channel_update, persona_update, inventory_add/update/bind/unbind, post_upsert, metrics_add, inventory_gaps; every write is audited."
+        "instructions": "The thread's data sources. Local folders: read them with your own file tools by absolute path. Cloud (AgentArea workspace files, agentarea://files/<path>): cloud_list and cloud_read. Channels network state (~/AgentArea/state.db): state_query (read-only SQL) and the typed tools channel_update, persona_update, inventory_add/update/bind/unbind, post_upsert, metrics_add, inventory_gaps; the user's review verdicts on generated posts come from review_feedback and are answered with post_revise / post_review_resolve; every write is audited."
     })
 }
 

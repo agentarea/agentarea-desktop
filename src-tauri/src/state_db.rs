@@ -41,9 +41,12 @@ pub const ITEM_STATUSES: &[&str] = &["active", "reserved", "broken", "retired"];
 pub const SUBJECT_TYPES: &[&str] = &["persona", "channel", "mcp"];
 pub const PURPOSES: &[&str] = &["egress", "login", "2fa", "api", "device", "other"];
 pub const POST_STATUSES: &[&str] = &["draft", "scheduled", "published"];
+pub const POST_KINDS: &[&str] = &["video_script", "caption", "text", "telegram_post", "carousel", "comment_reply"];
+pub const REVIEW_STATUSES: &[&str] = &["pending", "liked", "disliked", "needs_changes", "approved"];
+pub const VERDICTS: &[&str] = &["like", "dislike", "needs_changes", "approve"];
 const BUDGET_KEYS: [&str; 5] = ["proxy", "account", "content", "ads", "other"];
 /// Columns holding JSON text; parsed back into JSON on the way out.
-const JSON_COLS: &[&str] = &["languages", "personality", "refs", "meta", "diff"];
+const JSON_COLS: &[&str] = &["languages", "personality", "refs", "meta", "diff", "hashtags"];
 
 pub const QUERY_ROWS_DEFAULT: usize = 200;
 pub const QUERY_ROWS_MAX: usize = 1000;
@@ -281,6 +284,43 @@ CREATE TABLE inventory_requirements_v2 (
 INSERT INTO inventory_requirements_v2 SELECT id, platform, type, scope, purpose, count, geo_match, notes FROM inventory_requirements;
 DROP TABLE inventory_requirements;
 ALTER TABLE inventory_requirements_v2 RENAME TO inventory_requirements;
+"#,
+// v3: content review. Posts carry the generated content (kind, hook, script,
+// caption, hashtags, media brief, language), who generated it and where
+// feedback goes (context_ref = a desktop thread id), a revision chain and a
+// review status; post_reviews holds each verdict until it is resolved.
+r#"
+ALTER TABLE posts ADD COLUMN kind TEXT NOT NULL DEFAULT 'text'
+  CHECK (kind IN ('video_script','caption','text','telegram_post','carousel','comment_reply'));
+ALTER TABLE posts ADD COLUMN hook TEXT NOT NULL DEFAULT '';
+ALTER TABLE posts ADD COLUMN script TEXT NOT NULL DEFAULT '';
+ALTER TABLE posts ADD COLUMN caption TEXT NOT NULL DEFAULT '';
+ALTER TABLE posts ADD COLUMN hashtags TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE posts ADD COLUMN media_brief TEXT NOT NULL DEFAULT '';
+ALTER TABLE posts ADD COLUMN language TEXT NOT NULL DEFAULT '';
+ALTER TABLE posts ADD COLUMN generated_by TEXT NOT NULL DEFAULT '';
+ALTER TABLE posts ADD COLUMN context_ref TEXT NOT NULL DEFAULT '';
+ALTER TABLE posts ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE posts ADD COLUMN parent_post_id INTEGER REFERENCES posts(id) ON DELETE SET NULL;
+ALTER TABLE posts ADD COLUMN review_status TEXT NOT NULL DEFAULT 'pending'
+  CHECK (review_status IN ('pending','liked','disliked','needs_changes','approved'));
+CREATE INDEX posts_parent ON posts(parent_post_id);
+CREATE INDEX posts_review ON posts(review_status);
+CREATE TABLE post_reviews (
+  id                 INTEGER PRIMARY KEY,
+  post_id            INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+  verdict            TEXT NOT NULL CHECK (verdict IN ('like','dislike','needs_changes','approve')),
+  comment            TEXT NOT NULL DEFAULT '',
+  actor              TEXT NOT NULL DEFAULT '',
+  at                 TEXT NOT NULL,
+  delivered_at       TEXT,
+  delivered_to       TEXT NOT NULL DEFAULT '',
+  resolved_at        TEXT,
+  resolution_post_id INTEGER REFERENCES posts(id) ON DELETE SET NULL,
+  resolution_note    TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX post_reviews_post ON post_reviews(post_id);
+CREATE INDEX post_reviews_open ON post_reviews(post_id) WHERE resolved_at IS NULL;
 "#,
 ];
 
@@ -529,7 +569,15 @@ impl StateDb {
             "inventory_bind" => self.write(|tx| bind(tx, actor, p)),
             "inventory_unbind" => self.write(|tx| unbind(tx, actor, p)),
             "inventory_autobind" => self.write(|tx| autobind(tx, actor, p)),
+            "review_feed" => self.read(|c| review_feed(c, p)),
+            "review_feedback" => self.read(|c| review_feedback(c, p)),
+            "post_history" => self.read(|c| post_history(c, p)),
             "post_upsert" => self.write(|tx| post_upsert(tx, actor, p)),
+            "post_revise" => self.write(|tx| post_revise(tx, actor, p)),
+            "post_review_add" => self.write(|tx| post_review_add(tx, actor, p)),
+            "post_review_undo" => self.write(|tx| post_review_undo(tx, actor, p)),
+            "post_review_delivered" => self.write(|tx| post_review_delivered(tx, actor, p)),
+            "post_review_resolve" => self.write(|tx| post_review_resolve(tx, actor, p)),
             "post_delete" => self.write(|tx| post_delete(tx, actor, p)),
             "metrics_add" => self.write(|tx| metrics_add(tx, actor, p)),
             "requirement_add" => self.write(|tx| requirement_add(tx, actor, p)),
@@ -750,6 +798,8 @@ enum Kind {
     Enum(&'static [&'static str]),
     /// "" or two uppercase letters
     Country,
+    /// "" or a two-letter language code (uk, ru, en…)
+    Lang,
     SecretRef,
     Meta,
 }
@@ -805,6 +855,13 @@ fn field_value(name: &str, kind: Kind, v: &Value) -> R<Sql> {
             let s = text(v)?.to_ascii_uppercase();
             if !(s.is_empty() || (s.len() == 2 && s.chars().all(|c| c.is_ascii_uppercase()))) {
                 return Err(format!("{name} must be a two-letter country code like DE"));
+            }
+            Sql::Text(s)
+        }
+        Kind::Lang => {
+            let s = text(v)?.to_ascii_lowercase();
+            if !(s.is_empty() || (s.len() == 2 && s.chars().all(|c| c.is_ascii_lowercase()))) {
+                return Err(format!("{name} must be a two-letter language code like uk, ru or en"));
             }
             Sql::Text(s)
         }
@@ -1561,12 +1618,7 @@ fn snapshot(conn: &Connection, secrets: &HashSet<String>) -> R<Value> {
         })
         .collect();
 
-    let posts = query_json(
-        conn,
-        "SELECT p.id, p.channel_id, c.persona, c.platform, p.scheduled_at AS datetime, p.status, p.title, p.body_or_path AS text_or_file
-         FROM posts p JOIN channels c ON c.id = p.channel_id ORDER BY p.scheduled_at, p.id",
-        [],
-    )?;
+    let posts = with_reviews(conn, query_json(conn, &format!("{POST_SELECT} ORDER BY p.scheduled_at, p.id"), [])?, true)?;
     let metrics = query_json(
         conn,
         "SELECT m.date, c.persona, c.platform, m.reach, m.cost, m.currency, m.followers, m.posts_published
@@ -1950,20 +2002,59 @@ fn autobind(conn: &Connection, actor: &str, p: &Value) -> R<Value> {
     Ok(json!({ "bound": bound.len(), "bindings": bound, "unassigned_count": unassigned.len(), "unassigned": unassigned }))
 }
 
-fn post_upsert(conn: &Connection, actor: &str, p: &Value) -> R<Value> {
-    let now = now_iso();
-    let fields: &[(&str, Kind)] = &[
-        ("scheduled_at", Kind::Text),
-        ("status", Kind::Enum(POST_STATUSES)),
-        ("title", Kind::Text),
-        ("body_or_path", Kind::Text),
-    ];
+/// Post fields an upsert may set. `revision`, `parent_post_id` and
+/// `review_status` move only through post_revise and the reviews.
+const POST_FIELDS: &[(&str, Kind)] = &[
+    ("scheduled_at", Kind::Text),
+    ("status", Kind::Enum(POST_STATUSES)),
+    ("title", Kind::Text),
+    ("body_or_path", Kind::Text),
+    ("kind", Kind::Enum(POST_KINDS)),
+    ("hook", Kind::Text),
+    ("script", Kind::Text),
+    ("caption", Kind::Text),
+    ("hashtags", Kind::Array),
+    ("media_brief", Kind::Text),
+    ("language", Kind::Lang),
+    ("generated_by", Kind::Text),
+    ("context_ref", Kind::Text),
+];
+
+/// The settable post fields present in `p`; hashtags may come as "#a #b".
+fn post_set(p: &Value) -> Map<String, Value> {
     let mut set = Map::new();
-    for (k, _) in fields {
+    for (k, _) in POST_FIELDS {
         if let Some(v) = p.get(*k) {
             set.insert(k.to_string(), v.clone());
         }
     }
+    if let Some(Value::String(tags)) = set.get("hashtags") {
+        let list: Vec<Value> =
+            tags.split(|c: char| c.is_whitespace() || c == ',').filter(|t| !t.is_empty()).map(|t| json!(t)).collect();
+        set.insert("hashtags".into(), Value::Array(list));
+    }
+    set
+}
+
+/// A new post made by an agent in a local thread sends its feedback back to
+/// that thread unless it says otherwise.
+fn default_origin(set: &mut Map<String, Value>, actor: &str) {
+    if !set.contains_key("generated_by") {
+        set.insert("generated_by".into(), json!(actor));
+    }
+    if let Some(thread) = actor.strip_prefix("agent:") {
+        if !set.contains_key("context_ref") {
+            set.insert("context_ref".into(), json!(thread));
+        }
+    }
+}
+
+fn post_upsert(conn: &Connection, actor: &str, p: &Value) -> R<Value> {
+    if let Some(k) = ["review_status", "revision", "parent_post_id"].into_iter().find(|k| p.get(*k).is_some()) {
+        return Err(format!("{k} can't be set here: review_status follows the reviews, a new revision comes from post_revise"));
+    }
+    let now = now_iso();
+    let mut set = post_set(p);
     let (id, action) = match p.get("id").and_then(num) {
         Some(id) => {
             let id = id as i64;
@@ -1977,14 +2068,353 @@ fn post_upsert(conn: &Connection, actor: &str, p: &Value) -> R<Value> {
         None => {
             let ch = channel_ref(conn, p)?;
             conn.execute("INSERT INTO posts (channel_id, created_at, updated_at) VALUES (?1, ?2, ?2)", params![ch, now]).map_err(e)?;
+            default_origin(&mut set, actor);
             (conn.last_insert_rowid(), "create")
         }
     };
-    let diff = apply_patch(conn, "posts", "id", &Sql::Integer(id), fields, &set)?;
+    let diff = apply_patch(conn, "posts", "id", &Sql::Integer(id), POST_FIELDS, &set)?;
     if action == "create" || !diff.is_empty() {
         audit(conn, actor, action, "post", &id.to_string(), &Value::Object(diff))?;
     }
     query_one(conn, "SELECT * FROM posts WHERE id = ?1", [id])?.ok_or_else(|| "post vanished".into())
+}
+
+// ── reviews ──────────────────────────────────────────────────────────────────
+
+fn post_id(p: &Value, key: &str) -> R<i64> {
+    let id = p.get(key).and_then(num).map(|n| n as i64).ok_or_else(|| format!("\"{key}\" (post id) is required"))?;
+    Ok(id)
+}
+
+fn post_row(conn: &Connection, id: i64) -> R<Value> {
+    query_one(conn, "SELECT * FROM posts WHERE id = ?1", [id])?.ok_or_else(|| format!("no post {id}"))
+}
+
+fn review_row(conn: &Connection, id: i64) -> R<Value> {
+    query_one(conn, "SELECT * FROM post_reviews WHERE id = ?1", [id])?.ok_or_else(|| format!("no review {id}"))
+}
+
+/// The post's review_status follows its latest verdict ('pending' without one).
+fn sync_review_status(conn: &Connection, actor: &str, post: i64) -> R<String> {
+    let verdict: Option<String> = conn
+        .query_row("SELECT verdict FROM post_reviews WHERE post_id = ?1 ORDER BY at DESC, id DESC LIMIT 1", [post], |r| r.get(0))
+        .optional()
+        .map_err(e)?;
+    let status = match verdict.as_deref() {
+        Some("like") => "liked",
+        Some("dislike") => "disliked",
+        Some("needs_changes") => "needs_changes",
+        Some("approve") => "approved",
+        _ => "pending",
+    };
+    let before: String = conn.query_row("SELECT review_status FROM posts WHERE id = ?1", [post], |r| r.get(0)).map_err(e)?;
+    if before != status {
+        conn.execute("UPDATE posts SET review_status = ?1, updated_at = ?2 WHERE id = ?3", params![status, now_iso(), post]).map_err(e)?;
+        audit(conn, actor, "update", "post", &post.to_string(), &json!({ "review_status": { "from": before, "to": status } }))?;
+    }
+    Ok(status.to_string())
+}
+
+/// `{post_id, verdict like|dislike|needs_changes|approve, comment?}` → `{review, post}`.
+fn post_review_add(conn: &Connection, actor: &str, p: &Value) -> R<Value> {
+    let post = post_id(p, "post_id")?;
+    post_row(conn, post)?;
+    let verdict = match field_value("verdict", Kind::Enum(VERDICTS), p.get("verdict").unwrap_or(&Value::Null))? {
+        Sql::Text(v) => v,
+        _ => unreachable!(),
+    };
+    let comment = match field_value("comment", Kind::Text, p.get("comment").unwrap_or(&Value::Null))? {
+        Sql::Text(c) => c,
+        _ => String::new(),
+    };
+    conn.execute(
+        "INSERT INTO post_reviews (post_id, verdict, comment, actor, at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![post, verdict, comment, actor, now_iso()],
+    )
+    .map_err(e)?;
+    let id = conn.last_insert_rowid();
+    audit(conn, actor, "create", "post_review", &id.to_string(), &json!({ "post_id": post, "verdict": verdict, "comment": comment }))?;
+    sync_review_status(conn, actor, post)?;
+    Ok(json!({ "review": review_row(conn, id)?, "post": post_row(conn, post)? }))
+}
+
+/// Take a verdict back (the plugin's undo): the row goes, the post's status
+/// falls back to the previous verdict.
+fn post_review_undo(conn: &Connection, actor: &str, p: &Value) -> R<Value> {
+    let id = p.get("id").and_then(num).map(|n| n as i64).ok_or("\"id\" (review id) is required")?;
+    let row = review_row(conn, id)?;
+    if !row["resolved_at"].is_null() {
+        return Err(format!("review {id} is already resolved; add a new verdict instead"));
+    }
+    let post = row["post_id"].as_i64().unwrap_or_default();
+    conn.execute("DELETE FROM post_reviews WHERE id = ?1", [id]).map_err(e)?;
+    audit(conn, actor, "delete", "post_review", &id.to_string(), &row)?;
+    sync_review_status(conn, actor, post)?;
+    Ok(json!({ "deleted": id, "was_delivered": !row["delivered_at"].is_null(), "post": post_row(conn, post)? }))
+}
+
+/// The plugin sent a review to the generating thread: `{id, to}`.
+fn post_review_delivered(conn: &Connection, actor: &str, p: &Value) -> R<Value> {
+    let id = p.get("id").and_then(num).map(|n| n as i64).ok_or("\"id\" (review id) is required")?;
+    review_row(conn, id)?;
+    let to = opt_str(p, "to").unwrap_or_default();
+    let at = now_iso();
+    conn.execute("UPDATE post_reviews SET delivered_at = ?1, delivered_to = ?2 WHERE id = ?3", params![at, to, id]).map_err(e)?;
+    audit(conn, actor, "update", "post_review", &id.to_string(), &json!({ "delivered_at": { "from": null, "to": at }, "delivered_to": { "from": "", "to": to } }))?;
+    review_row(conn, id)
+}
+
+/// Close open reviews: `{id}` one review, or `{post_id}` all of a post's open
+/// ones; optional `resolution_post_id` (the revision that answers them) and `note`.
+fn post_review_resolve(conn: &Connection, actor: &str, p: &Value) -> R<Value> {
+    let resolution = p.get("resolution_post_id").and_then(num).map(|n| n as i64);
+    if let Some(r) = resolution {
+        post_row(conn, r)?;
+    }
+    let note = opt_str(p, "note").unwrap_or_default();
+    let ids: Vec<i64> = if let Some(id) = p.get("id").and_then(num) {
+        let row = review_row(conn, id as i64)?;
+        if !row["resolved_at"].is_null() {
+            return Err(format!("review {} is already resolved", id as i64));
+        }
+        vec![id as i64]
+    } else {
+        let post = post_id(p, "post_id").map_err(|_| "give the review \"id\" or a \"post_id\"".to_string())?;
+        post_row(conn, post)?;
+        let mut stmt = conn.prepare("SELECT id FROM post_reviews WHERE post_id = ?1 AND resolved_at IS NULL ORDER BY id").map_err(e)?;
+        let ids = stmt.query_map([post], |r| r.get(0)).map_err(e)?.collect::<Result<Vec<i64>, _>>().map_err(e)?;
+        ids
+    };
+    let at = now_iso();
+    for id in &ids {
+        conn.execute(
+            "UPDATE post_reviews SET resolved_at = ?1, resolution_post_id = ?2, resolution_note = ?3 WHERE id = ?4",
+            params![at, resolution, note, id],
+        )
+        .map_err(e)?;
+        audit(conn, actor, "update", "post_review", &id.to_string(), &json!({ "resolved_at": { "from": null, "to": at }, "resolution_post_id": { "from": null, "to": resolution } }))?;
+    }
+    Ok(json!({ "resolved": ids.len(), "review_ids": ids }))
+}
+
+/// A new revision of a post: `{post_id, …fields to change}`. The copy keeps
+/// the channel and every content field not given, gets revision + 1 and
+/// parent_post_id, starts pending, and resolves the parent's open reviews.
+fn post_revise(conn: &Connection, actor: &str, p: &Value) -> R<Value> {
+    let parent_id = post_id(p, "post_id")?;
+    let parent = post_row(conn, parent_id)?;
+    let newer: Option<i64> = conn
+        .query_row("SELECT id FROM posts WHERE parent_post_id = ?1 ORDER BY id DESC LIMIT 1", [parent_id], |r| r.get(0))
+        .optional()
+        .map_err(e)?;
+    if let Some(n) = newer {
+        return Err(format!("post {parent_id} already has a newer revision (post {n}); revise that one"));
+    }
+    let now = now_iso();
+    conn.execute(
+        "INSERT INTO posts (channel_id, scheduled_at, status, title, body_or_path, kind, hook, script, caption, hashtags,
+                            media_brief, language, generated_by, context_ref, revision, parent_post_id, review_status, created_at, updated_at)
+         SELECT channel_id, scheduled_at, status, title, body_or_path, kind, hook, script, caption, hashtags,
+                media_brief, language, generated_by, context_ref, revision + 1, id, 'pending', ?2, ?2
+         FROM posts WHERE id = ?1",
+        params![parent_id, now],
+    )
+    .map_err(e)?;
+    let id = conn.last_insert_rowid();
+    let mut set = post_set(p);
+    if !set.contains_key("generated_by") {
+        set.insert("generated_by".into(), json!(actor));
+    }
+    if let (Some(thread), false) = (actor.strip_prefix("agent:"), set.contains_key("context_ref")) {
+        if parent["context_ref"].as_str().unwrap_or("").is_empty() {
+            set.insert("context_ref".into(), json!(thread));
+        }
+    }
+    let diff = apply_patch(conn, "posts", "id", &Sql::Integer(id), POST_FIELDS, &set)?;
+    let mut d = diff;
+    d.insert("parent_post_id".into(), json!({ "from": null, "to": parent_id }));
+    d.insert("revision".into(), json!({ "from": parent["revision"], "to": parent["revision"].as_i64().unwrap_or(1) + 1 }));
+    audit(conn, actor, "create", "post", &id.to_string(), &Value::Object(d))?;
+    let note = opt_str(p, "note").unwrap_or_else(|| format!("revised as post {id}"));
+    let resolved = post_review_resolve(conn, actor, &json!({ "post_id": parent_id, "resolution_post_id": id, "note": note }))?;
+    Ok(json!({ "post": post_row(conn, id)?, "parent_post_id": parent_id, "resolved": resolved["resolved"] }))
+}
+
+/// Reviews by post id, oldest first.
+fn reviews_by_post(conn: &Connection, post_ids: Option<&[i64]>) -> R<HashMap<i64, Vec<Value>>> {
+    let rows = match post_ids {
+        None => query_json(conn, "SELECT * FROM post_reviews ORDER BY at, id", [])?,
+        Some([]) => Vec::new(),
+        Some(ids) => {
+            let list = ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+            query_json(conn, &format!("SELECT * FROM post_reviews WHERE post_id IN ({list}) ORDER BY at, id"), [])?
+        }
+    };
+    let mut out: HashMap<i64, Vec<Value>> = HashMap::new();
+    for r in rows {
+        out.entry(r["post_id"].as_i64().unwrap_or_default()).or_default().push(r);
+    }
+    Ok(out)
+}
+
+/// Posts as the plugin and posts.json see them: the legacy keys (datetime,
+/// text_or_file) plus the content fields, persona facts and `reviews`.
+const POST_SELECT: &str = "SELECT p.id, p.channel_id, c.persona, c.platform, p.scheduled_at AS datetime, p.status, p.title,
+       p.body_or_path AS text_or_file, p.kind, p.hook, p.script, p.caption, p.hashtags, p.media_brief, p.language,
+       p.generated_by, p.context_ref, p.revision, p.parent_post_id, p.review_status, p.created_at, p.updated_at,
+       (SELECT min(k.id) FROM posts k WHERE k.parent_post_id = p.id) AS child_post_id,
+       ps.name AS persona_name, ps.emoji AS persona_emoji, ps.country AS persona_country
+  FROM posts p JOIN channels c ON c.id = p.channel_id JOIN personas ps ON ps.handle = c.persona";
+
+fn with_reviews(conn: &Connection, mut posts: Vec<Value>, all: bool) -> R<Vec<Value>> {
+    let ids: Vec<i64> = posts.iter().filter_map(|p| p["id"].as_i64()).collect();
+    let mut reviews = reviews_by_post(conn, if all { None } else { Some(&ids) })?;
+    for p in &mut posts {
+        let id = p["id"].as_i64().unwrap_or_default();
+        p["reviews"] = json!(reviews.remove(&id).unwrap_or_default());
+    }
+    Ok(posts)
+}
+
+/// The Review tab's feed: head revisions (no newer revision), filtered by
+/// persona, country, platform, review_status ('all' = any), kind, date range
+/// (`from` / `to` on scheduled_at, YYYY-MM-DD); `include_ids` always listed
+/// (posts reviewed in this session stay put). Counts ignore the status filter.
+fn review_feed(conn: &Connection, p: &Value) -> R<Value> {
+    let mut wh: Vec<String> = vec!["NOT EXISTS (SELECT 1 FROM posts k WHERE k.parent_post_id = p.id)".into()];
+    let mut args: Vec<Sql> = Vec::new();
+    let mut arg = |wh: &mut Vec<String>, sql: &str, v: String| {
+        args.push(Sql::Text(v));
+        wh.push(sql.replace('?', &format!("?{}", args.len())));
+    };
+    let pick = |k: &str| opt_str(p, k).filter(|v| v != "all");
+    if let Some(v) = pick("persona") {
+        arg(&mut wh, "c.persona = ?", v.trim_start_matches('@').to_string());
+    }
+    if let Some(v) = pick("country") {
+        arg(&mut wh, "ps.country = ?", v.to_ascii_uppercase());
+    }
+    if let Some(v) = pick("platform") {
+        arg(&mut wh, "c.platform = ?", v.to_ascii_lowercase());
+    }
+    if let Some(v) = pick("kind") {
+        arg(&mut wh, "p.kind = ?", v);
+    }
+    if let Some(v) = pick("from") {
+        arg(&mut wh, "p.scheduled_at <> '' AND substr(p.scheduled_at, 1, 10) >= ?", v);
+    }
+    if let Some(v) = pick("to") {
+        arg(&mut wh, "p.scheduled_at <> '' AND substr(p.scheduled_at, 1, 10) <= ?", v);
+    }
+    let base = wh.join(" AND ");
+    let mut counts = Map::new();
+    for s in REVIEW_STATUSES {
+        counts.insert(s.to_string(), json!(0));
+    }
+    let mut total = 0;
+    {
+        let sql = format!(
+            "SELECT p.review_status, count(*) FROM posts p JOIN channels c ON c.id = p.channel_id JOIN personas ps ON ps.handle = c.persona WHERE {base} GROUP BY 1"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(e)?;
+        let mut rows = stmt.query(params_from_iter(args.iter())).map_err(e)?;
+        while let Some(r) = rows.next().map_err(e)? {
+            let (s, n): (String, i64) = (r.get(0).map_err(e)?, r.get(1).map_err(e)?);
+            total += n;
+            counts.insert(s, json!(n));
+        }
+    }
+    counts.insert("total".into(), json!(total));
+    let status = pick("review_status").or_else(|| pick("status"));
+    let mut filtered = base.clone();
+    let mut fargs = args.clone();
+    if let Some(s) = status {
+        if !REVIEW_STATUSES.contains(&s.as_str()) {
+            return Err(format!("review_status must be all or one of: {}", REVIEW_STATUSES.join(", ")));
+        }
+        fargs.push(Sql::Text(s));
+        filtered = format!("{filtered} AND p.review_status = ?{}", fargs.len());
+    }
+    let include: Vec<i64> =
+        p.get("include_ids").and_then(Value::as_array).map(|a| a.iter().filter_map(num).map(|n| n as i64).collect()).unwrap_or_default();
+    if !include.is_empty() {
+        let list = include.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+        filtered = format!("(({filtered}) OR (p.id IN ({list}) AND {base}))");
+    }
+    let limit = p.get("limit").and_then(num).map(|n| n.clamp(1.0, 5000.0) as i64).unwrap_or(2000);
+    let sql = format!(
+        "{POST_SELECT} WHERE {filtered} ORDER BY p.scheduled_at = '', p.scheduled_at, p.id LIMIT {limit}"
+    );
+    let posts = with_reviews(conn, query_json(conn, &sql, params_from_iter(fargs.iter()))?, false)?;
+    Ok(json!({ "posts": posts, "counts": counts }))
+}
+
+/// A post's revision chain, oldest first (ancestors, the post, newer
+/// revisions), each with its reviews.
+fn post_history(conn: &Connection, p: &Value) -> R<Value> {
+    let id = post_id(p, "id").or_else(|_| post_id(p, "post_id"))?;
+    post_row(conn, id)?;
+    let mut chain = vec![id];
+    let mut cur = id;
+    while let Some(parent) = conn
+        .query_row("SELECT parent_post_id FROM posts WHERE id = ?1", [cur], |r| r.get::<_, Option<i64>>(0))
+        .map_err(e)?
+    {
+        if chain.contains(&parent) || chain.len() > 100 {
+            break;
+        }
+        chain.insert(0, parent);
+        cur = parent;
+    }
+    cur = id;
+    while let Some(child) = conn
+        .query_row("SELECT min(id) FROM posts WHERE parent_post_id = ?1", [cur], |r| r.get::<_, Option<i64>>(0))
+        .map_err(e)?
+    {
+        if chain.contains(&child) || chain.len() > 100 {
+            break;
+        }
+        chain.push(child);
+        cur = child;
+    }
+    let list = chain.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+    let posts = query_json(conn, &format!("{POST_SELECT} WHERE p.id IN ({list}) ORDER BY p.revision, p.id"), [])?;
+    Ok(json!(with_reviews(conn, posts, false)?))
+}
+
+/// For agents: posts with their reviews (open ones only by default), so the
+/// next generation run can act on them. Filters: persona, platform, context_ref.
+fn review_feedback(conn: &Connection, p: &Value) -> R<Value> {
+    let unresolved = p.get("unresolved_only").and_then(Value::as_bool).unwrap_or(true);
+    let mut wh = vec![format!(
+        "EXISTS (SELECT 1 FROM post_reviews r WHERE r.post_id = p.id{})",
+        if unresolved { " AND r.resolved_at IS NULL" } else { "" }
+    )];
+    let mut args: Vec<Sql> = Vec::new();
+    for (key, col) in [("persona", "c.persona"), ("platform", "c.platform"), ("context_ref", "p.context_ref")] {
+        if let Some(v) = opt_str(p, key) {
+            let v = if key == "persona" { v.trim_start_matches('@').to_string() } else { v };
+            args.push(Sql::Text(v));
+            wh.push(format!("{col} = ?{}", args.len()));
+        }
+    }
+    let limit = p.get("limit").and_then(num).map(|n| n.clamp(1.0, 500.0) as i64).unwrap_or(100);
+    let sql = format!("{POST_SELECT} WHERE {} ORDER BY p.id LIMIT {limit}", wh.join(" AND "));
+    let mut posts = with_reviews(conn, query_json(conn, &sql, params_from_iter(args.iter()))?, false)?;
+    for post in &mut posts {
+        if let Some(obj) = post.as_object_mut() {
+            for k in ["persona_name", "persona_emoji", "persona_country", "created_at", "updated_at"] {
+                obj.remove(k);
+            }
+            if unresolved {
+                if let Some(Value::Array(rs)) = obj.get_mut("reviews") {
+                    rs.retain(|r| r["resolved_at"].is_null());
+                }
+            }
+        }
+    }
+    Ok(json!({ "posts": posts, "count": posts.len(),
+        "next": "Revise a post with post_revise {post_id, …changed fields} (resolves its open reviews); acknowledge likes/approvals with post_review_resolve {post_id, note}." }))
 }
 
 fn post_delete(conn: &Connection, actor: &str, p: &Value) -> R<Value> {
@@ -2426,7 +2856,7 @@ pub fn mcp_tools() -> Value {
     json!([
         {
             "name": "state_query",
-            "description": "Read-only SQL (SQLite) over the Channels network state in ~/AgentArea/state.db. One SELECT or WITH statement; writes, PRAGMA and ATTACH are rejected; at most 1000 rows (default 200). Tables: personas(handle PK, name, emoji, niche, category, country DE|PL|IT, city, languages JSON, target_audience, hypothesis, personality JSON, refs JSON, soul_path → ~/AgentArea/channels/<soul_path>), channels(id, persona, platform tiktok|instagram|youtube|facebook|x|threads|telegram, handle_registered, url, stage idea|setup|setup_done|live|paused|stopped, role creator|community|engager, plan, kpi_metric, kpi_target, mcp, notes), channel_tasks(channel_id, position, type, cadence, notes), budget(channel_id, kind planned|spent, period 'monthly'|'YYYY-MM', currency, proxy, account, content, ads, other), metrics(channel_id, date, reach, followers, posts_published, cost, currency), posts(id, channel_id, scheduled_at, status draft|scheduled|published, title, body_or_path), inventory_items(id, type proxy|phone|email|device_profile|api_key|account|domain|card|other, label, provider, geo, cost_month, currency, status active|reserved|broken|retired, capacity NULL=unlimited, secret_ref = vault secret NAME, meta JSON), bindings(id, item_id, subject_type persona|channel|mcp, subject_id, purpose egress|login|2fa|api|device|other, since, until NULL = active), inventory_requirements(platform|'*', type, scope persona|channel, purpose, count, geo_match), audit_log(at, actor, action, entity, entity_id, diff). Use json_extract() for JSON columns. Full schema: ~/AgentArea/channels/SCHEMA.md.",
+            "description": "Read-only SQL (SQLite) over the Channels network state in ~/AgentArea/state.db. One SELECT or WITH statement; writes, PRAGMA and ATTACH are rejected; at most 1000 rows (default 200). Tables: personas(handle PK, name, emoji, niche, category, country DE|PL|IT, city, languages JSON, target_audience, hypothesis, personality JSON, refs JSON, soul_path → ~/AgentArea/channels/<soul_path>), channels(id, persona, platform tiktok|instagram|youtube|facebook|x|threads|telegram, handle_registered, url, stage idea|setup|setup_done|live|paused|stopped, role creator|community|engager, plan, kpi_metric, kpi_target, mcp, notes), channel_tasks(channel_id, position, type, cadence, notes), budget(channel_id, kind planned|spent, period 'monthly'|'YYYY-MM', currency, proxy, account, content, ads, other), metrics(channel_id, date, reach, followers, posts_published, cost, currency), posts(id, channel_id, scheduled_at, status draft|scheduled|published, title, body_or_path, kind video_script|caption|text|telegram_post|carousel|comment_reply, hook, script, caption, hashtags JSON, media_brief, language, generated_by, context_ref, revision, parent_post_id, review_status pending|liked|disliked|needs_changes|approved), post_reviews(id, post_id, verdict like|dislike|needs_changes|approve, comment, actor, at, delivered_at, delivered_to, resolved_at, resolution_post_id, resolution_note), inventory_items(id, type proxy|phone|email|device_profile|api_key|account|domain|card|other, label, provider, geo, cost_month, currency, status active|reserved|broken|retired, capacity NULL=unlimited, secret_ref = vault secret NAME, meta JSON), bindings(id, item_id, subject_type persona|channel|mcp, subject_id, purpose egress|login|2fa|api|device|other, since, until NULL = active), inventory_requirements(platform|'*', type, scope persona|channel, purpose, count, geo_match), audit_log(at, actor, action, entity, entity_id, diff). Use json_extract() for JSON columns. Full schema: ~/AgentArea/channels/SCHEMA.md.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2512,16 +2942,75 @@ pub fn mcp_tools() -> Value {
         },
         {
             "name": "post_upsert",
-            "description": "Create a post (give the channel) or update one (give id). Fields: scheduled_at ('YYYY-MM-DD HH:MM' local), status draft|scheduled|published, title, body_or_path (the text, or a path relative to ~/AgentArea/channels, e.g. <handle>/posts/01.md, for long drafts).",
+            "description": "Create a post (give the channel) or update one (give id). Fields: scheduled_at ('YYYY-MM-DD HH:MM' local), status draft|scheduled|published, kind (video_script for TikTok/Reels/Shorts, caption, carousel, text for X/Threads/Facebook, telegram_post, comment_reply), hook (first line / on-screen text), script (spoken + on-screen lines of a video), caption, hashtags [\"#a\", …], media_brief (what to shoot or generate), language (uk|ru|en…), title, body_or_path (the text, or a path relative to ~/AgentArea/channels for long drafts). A new post records generated_by = you and context_ref = your thread, so the user's review feedback comes back to this thread; set context_ref: \"\" to opt out. To change a post the user already reviewed, use post_revise instead.",
             "inputSchema": {
                 "type": "object",
                 "properties": with(json!({
                     "id": { "type": "integer" },
                     "scheduled_at": { "type": "string" },
                     "status": { "type": "string", "enum": POST_STATUSES },
+                    "kind": { "type": "string", "enum": POST_KINDS },
                     "title": { "type": "string" },
-                    "body_or_path": { "type": "string" }
+                    "hook": { "type": "string" },
+                    "script": { "type": "string" },
+                    "caption": { "type": "string" },
+                    "hashtags": { "type": "array", "items": { "type": "string" } },
+                    "media_brief": { "type": "string" },
+                    "language": { "type": "string", "description": "uk, ru, en…" },
+                    "body_or_path": { "type": "string" },
+                    "generated_by": { "type": "string", "description": "Default: agent:<your thread>; or a batch label" },
+                    "context_ref": { "type": "string", "description": "Desktop thread id that gets the review feedback (default: yours)" }
                 }))
+            }
+        },
+        {
+            "name": "review_feedback",
+            "description": "The user's review verdicts on generated posts (like, dislike, needs_changes, approve + comment), for the next generation run. Returns posts with their content and open reviews (unresolved_only, default true). Act on them: post_revise for needs_changes / dislike, post_review_resolve {post_id, note} to acknowledge likes and approvals. Filter by persona, platform or context_ref (a thread id).",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "persona": { "type": "string" },
+                    "platform": { "type": "string", "enum": PLATFORMS },
+                    "context_ref": { "type": "string" },
+                    "unresolved_only": { "type": "boolean", "description": "Default true" },
+                    "limit": { "type": "integer", "description": "Default 100, max 500" }
+                }
+            }
+        },
+        {
+            "name": "post_revise",
+            "description": "Make a new revision of a post after review: give post_id and only the fields that change (hook, script, caption, hashtags, media_brief, language, title, body_or_path, kind, scheduled_at, status). The new post keeps the rest, gets revision + 1 and parent_post_id, starts review_status pending (back in the user's review feed), and resolves the parent's open reviews. Revise the latest revision only.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "post_id": { "type": "integer" },
+                    "hook": { "type": "string" },
+                    "script": { "type": "string" },
+                    "caption": { "type": "string" },
+                    "hashtags": { "type": "array", "items": { "type": "string" } },
+                    "media_brief": { "type": "string" },
+                    "language": { "type": "string" },
+                    "title": { "type": "string" },
+                    "body_or_path": { "type": "string" },
+                    "kind": { "type": "string", "enum": POST_KINDS },
+                    "scheduled_at": { "type": "string" },
+                    "status": { "type": "string", "enum": POST_STATUSES },
+                    "note": { "type": "string", "description": "What changed, stored on the resolved reviews" }
+                },
+                "required": ["post_id"]
+            }
+        },
+        {
+            "name": "post_review_resolve",
+            "description": "Mark review feedback as handled without a new revision: {id} one review, or {post_id} all open reviews of a post; optional note and resolution_post_id.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "Review id" },
+                    "post_id": { "type": "integer" },
+                    "resolution_post_id": { "type": "integer" },
+                    "note": { "type": "string" }
+                }
             }
         },
         {
@@ -2561,7 +3050,7 @@ pub fn mcp_call(name: &str, args: &Value, actor: &str) -> Option<R<String>> {
         "state_query" => "query",
         "inventory_gaps" => "gaps",
         "channel_update" | "persona_update" | "inventory_add" | "inventory_update" | "inventory_bind" | "inventory_unbind"
-        | "post_upsert" | "metrics_add" => name,
+        | "post_upsert" | "metrics_add" | "review_feedback" | "post_revise" | "post_review_resolve" => name,
         _ => return None,
     };
     let mut args = args.clone();
@@ -2575,7 +3064,7 @@ pub fn mcp_call(name: &str, args: &Value, actor: &str) -> Option<R<String>> {
 }
 
 /// Appended to a local turn's data hint.
-pub const AGENT_HINT: &str = "The Channels network (personas, channels, budgets, metrics, posts, inventory of proxies/phones/emails/device profiles and their bindings) lives in ~/AgentArea/state.db: read it with state_query (read-only SQL) and change it only with the typed agentarea_data tools (channel_update, persona_update, inventory_*, post_upsert, metrics_add); inventory_gaps shows what's missing. ~/AgentArea/channels/export/*.json are read-only snapshots; SOUL.md files stay editable in the persona folders; format in ~/AgentArea/channels/SCHEMA.md. Secrets only as vault names (secret_ref), never values.";
+pub const AGENT_HINT: &str = "The Channels network (personas, channels, budgets, metrics, posts, inventory of proxies/phones/emails/device profiles and their bindings) lives in ~/AgentArea/state.db: read it with state_query (read-only SQL) and change it only with the typed agentarea_data tools (channel_update, persona_update, inventory_*, post_upsert, metrics_add); inventory_gaps shows what's missing. Before generating posts, call review_feedback for the user's verdicts on earlier ones and answer them with post_revise / post_review_resolve. ~/AgentArea/channels/export/*.json are read-only snapshots; SOUL.md files stay editable in the persona folders; format in ~/AgentArea/channels/SCHEMA.md. Secrets only as vault names (secret_ref), never values.";
 
 #[cfg(test)]
 mod tests {
@@ -3001,6 +3490,277 @@ mod tests {
         }
         assert!(ok, "inventory.json re-exported");
         drop(db);
+        cleanup(&root);
+    }
+
+    /// A consistent copy of the real ~/AgentArea/state.db at `root/state.db`,
+    /// rolled back to schema v2 when the app already migrated it. `false` when
+    /// this machine has no state.db (CI).
+    fn copy_real_db_as_v2(root: &Path) -> bool {
+        let Ok(home) = std::env::var("HOME") else { return false };
+        let real = PathBuf::from(home).join("AgentArea/state.db");
+        if !real.is_file() {
+            eprintln!("no ~/AgentArea/state.db; skipping");
+            return false;
+        }
+        let dst = root.join("state.db");
+        let src = Connection::open_with_flags(&real, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        src.execute("VACUUM INTO ?1", [dst.to_string_lossy()]).unwrap();
+        drop(src);
+        let conn = Connection::open(&dst).unwrap();
+        let v: i64 = conn.query_row("SELECT max(version) FROM schema_version", [], |r| r.get(0)).unwrap();
+        assert!(v >= 2, "real db at v{v}");
+        if v >= 3 {
+            conn.execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 BEGIN;
+                 DROP TABLE post_reviews;
+                 CREATE TABLE posts_v2 (
+                   id           INTEGER PRIMARY KEY,
+                   channel_id   INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+                   scheduled_at TEXT NOT NULL DEFAULT '',
+                   status       TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','scheduled','published')),
+                   title        TEXT NOT NULL DEFAULT '',
+                   body_or_path TEXT NOT NULL DEFAULT '',
+                   created_at   TEXT NOT NULL,
+                   updated_at   TEXT NOT NULL
+                 );
+                 INSERT INTO posts_v2 SELECT id, channel_id, scheduled_at, status, title, body_or_path, created_at, updated_at FROM posts;
+                 DROP TABLE posts;
+                 ALTER TABLE posts_v2 RENAME TO posts;
+                 CREATE INDEX posts_channel ON posts(channel_id);
+                 DELETE FROM schema_version WHERE version >= 3;
+                 COMMIT;",
+            )
+            .unwrap();
+        }
+        true
+    }
+
+    /// Six sample drafts (plus one earlier revision) for the Review tab —
+    /// only ever in a test copy, never in the real database.
+    fn seed_review_samples(db: &StateDb) -> Vec<i64> {
+        let samples = [
+            json!({ "persona": "nadia_putzfee", "platform": "tiktok", "kind": "video_script", "language": "uk", "scheduled_at": "2026-10-02 18:00",
+                "hook": "3 засоби для прибирання, які я більше ніколи не куплю",
+                "script": "[в кадрі: полиця з побутовою хімією]\n1. «Універсальний» спрей — розводи на склі, плачу двічі.\n2. Дорогий засіб для духовки — сода + оцет роблять те саме.\n3. Ароматизовані серветки — залишають липкий шар.\n[в кадрі: мої 3 замінники]\nЗберігай, щоб не переплачувати в DM.",
+                "caption": "Прибираю в Франкфурті 4 роки — ось на чому я перестала економити навпаки 🧽",
+                "hashtags": ["#прибирання", "#Німеччина", "#putzen", "#лайфхак"], "media_brief": "Вертикальне відео 25 с, полиця з хімією в Rossmann, крупні плани рук, текст на екрані жовтим.",
+                "context_ref": "thread-demo-1", "generated_by": "agent:thread-demo-1" }),
+            json!({ "persona": "lesia_ksiegowa", "platform": "instagram", "kind": "carousel", "language": "uk", "scheduled_at": "2026-10-03 12:30",
+                "hook": "JDG у Польщі: 5 витрат, які можна списати вже цього місяця",
+                "caption": "Більшість моїх клієнтів з JDG недоотримують 300–600 zł на місяць, бо не знають, що можна вносити у витрати. Гортай ➡️ і зберігай на кінець місяця.\n\nПитання — в коментарі, відповідаю всім.",
+                "hashtags": ["#JDG", "#księgowość", "#бухгалтер", "#Польща", "#ZUS"], "media_brief": "Карусель 6 слайдів 4:5: обкладинка з хуком, 5 слайдів по одній витраті (телефон, авто, ноутбук, курси, оренда кута), фінальний — CTA «запис на консультацію».",
+                "generated_by": "batch:pl-oct-w1", "context_ref": "" }),
+            json!({ "persona": "tania_qa_wro", "platform": "x", "kind": "text", "language": "en", "scheduled_at": "2026-10-03 09:00",
+                "body_or_path": "Switched from teaching to QA at 34, in a new country, in my third language.\n\nThe thing nobody tells you: your first bug report matters more than your CV. Mine was 11 lines, had a video and steps anyone could repeat. That's what got me the offer.",
+                "hashtags": ["#QA", "#careerswitch"], "generated_by": "batch:pl-oct-w1", "context_ref": "" }),
+            json!({ "persona": "iryna_amt_help", "platform": "telegram", "kind": "telegram_post", "language": "ru", "scheduled_at": "2026-10-04 08:00",
+                "title": "Письмо из Jobcenter: Einladung",
+                "body_or_path": "📄 Пришло «Einladung» из Jobcenter — не паникуйте.\n\nЭто приглашение на встречу, не штраф. Что сделать:\n• проверьте дату и время вверху справа;\n• если не можете прийти — позвоните ДО встречи и попросите новый Termin;\n• возьмите паспорт, Aufenthaltstitel и само письмо.\n\nНе пришли без причины — могут урезать выплаты на 10%. Вопросы — в комментариях 👇",
+                "context_ref": "thread-demo-2", "generated_by": "agent:thread-demo-2" }),
+            json!({ "persona": "mykola_remont", "platform": "facebook", "kind": "text", "language": "uk", "scheduled_at": "2026-10-05 19:00",
+                "body_or_path": "Шукаю у Вроцлаві 2 плиточників у бригаду 🧱\n\nОб'єкти: квартири в новобудовах, ванні під ключ. Оплата за м², розрахунок щотижня, житло допомагаємо знайти. Досвід від 2 років і свій інструмент.\n\nПишіть у приват або дзвоніть — покажу наші роботи.",
+                "media_brief": "Фото готової ванної: великоформатна плитка, рівні шви.", "generated_by": "batch:pl-oct-w1", "context_ref": "" }),
+        ];
+        let mut ids = Vec::new();
+        let mut used: Vec<String> = Vec::new();
+        for mut s in samples {
+            // the named persona, else any unused one with a channel on that platform
+            let (want, platform) = (s["persona"].as_str().unwrap().to_string(), s["platform"].as_str().unwrap().to_string());
+            let pick: Option<String> = db
+                .read(|c| {
+                    c.query_row(
+                        "SELECT persona FROM channels WHERE platform = ?1 AND (persona = ?2 OR NOT EXISTS (SELECT 1 FROM channels WHERE persona = ?2 AND platform = ?1))
+                         ORDER BY persona = ?2 DESC, persona",
+                        params![platform, want],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(e)
+                })
+                .unwrap()
+                .filter(|h: &String| !used.contains(h));
+            let Some(h) = pick else { continue };
+            used.push(h.clone());
+            s["persona"] = json!(h);
+            s["status"] = json!("draft");
+            ids.push(db.call("agent:seed", "post_upsert", &s).unwrap()["id"].as_i64().unwrap());
+        }
+        // a short with a revision history: v1 got "needs changes", v2 answers it
+        if db.read(|c| persona_exists(c, "vitalik_pizza")).unwrap() {
+            let v1 = db.call("agent:thread-demo-1", "post_upsert", &json!({
+                "persona": "vitalik_pizza", "platform": "youtube", "kind": "video_script", "language": "uk", "status": "draft", "scheduled_at": "2026-10-06 17:00",
+                "hook": "Чому в Неаполі тісто для піци стоїть 24 години",
+                "script": "Тісто — це борошно, вода, сіль і дріжджі.\nМи залишаємо його на 24 години в холодильнику.\nТак воно смачніше.",
+                "caption": "Секрет неаполітанської піци 🍕", "hashtags": ["#піца", "#Неаполь"],
+                "media_brief": "Кухня піцерії, тісто в контейнерах, руки піцайоло." })).unwrap()["id"].as_i64().unwrap();
+            db.call("user", "post_review_add", &json!({ "post_id": v1, "verdict": "needs_changes", "comment": "Хук слабкий — додай конкретику і цифру. І покажи тісто на 2-й і 24-й годині." })).unwrap();
+            let v2 = db.call("agent:thread-demo-1", "post_revise", &json!({ "post_id": v1,
+                "hook": "2 години vs 24 години: ось що відбувається з тістом для піци",
+                "script": "[в кадрі: два шматки тіста поруч]\nЛіворуч — тісто, яке стояло 2 години. Праворуч — 24 години в холодильнику.\nБачите бульбашки? Це ферментація: тісто легше, скоринка хрусткіша.\nУ нашій піцерії в Неаполі інакше не роблять.\nЗберігай — на вихідних спробуєш сам.",
+                "note": "stronger hook with the 2 h vs 24 h comparison" })).unwrap()["post"]["id"].as_i64().unwrap();
+            ids.push(v2);
+        }
+        ids
+    }
+
+    #[test]
+    fn migration_3_on_a_copy_of_the_real_db() {
+        let root = temp_root("real-v3");
+        if !copy_real_db_as_v2(&root) {
+            return cleanup(&root);
+        }
+        let counts = |c: &Connection| -> R<(i64, i64, i64)> {
+            let n = |sql: &str| c.query_row(sql, [], |r| r.get::<_, i64>(0)).map_err(e);
+            Ok((n("SELECT count(*) FROM personas")?, n("SELECT count(*) FROM channels")?, n("SELECT count(*) FROM posts")?))
+        };
+        let before = {
+            let c = Connection::open(root.join("state.db")).unwrap();
+            counts(&c).unwrap()
+        };
+        let db = StateDb::open(&root).unwrap();
+        let v: i64 = db.read(|c| c.query_row("SELECT max(version) FROM schema_version", [], |r| r.get(0)).map_err(e)).unwrap();
+        assert_eq!(v, 3);
+        assert_eq!(db.read(counts).unwrap(), before, "no rows lost");
+        let fk: i64 = db.read(|c| c.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get(0)).map_err(e)).unwrap();
+        assert_eq!(fk, 0);
+        // old rows got the defaults
+        let bad = db.query_readonly("SELECT count(*) AS n FROM posts WHERE review_status <> 'pending' OR revision <> 1 OR kind <> 'text'", &[], 1).unwrap();
+        assert_eq!(bad["rows"][0]["n"], 0);
+
+        let ids = seed_review_samples(&db);
+        assert!(ids.len() >= 6 || before.0 < 60, "seeded {ids:?}");
+        let feed = db.call("user", "review_feed", &json!({ "review_status": "pending" })).unwrap();
+        assert_eq!(feed["counts"]["pending"].as_i64().unwrap() as usize, before.2 as usize + ids.len());
+        if let Some(first) = ids.first() {
+            db.call("user", "post_review_add", &json!({ "post_id": first, "verdict": "like", "comment": "Сильний хук" })).unwrap();
+        }
+        db.export_now().unwrap();
+        let posts: Value = serde_json::from_str(&std::fs::read_to_string(db.export_dir().join("posts.json")).unwrap()).unwrap();
+        assert!(posts.as_array().unwrap().iter().any(|p| !p["reviews"].as_array().unwrap().is_empty()));
+        // Screenshot fixture for the Review tab: AA_REVIEW_FIXTURE_DIR=<dir> keeps the export.
+        if let Ok(out) = std::env::var("AA_REVIEW_FIXTURE_DIR") {
+            std::fs::create_dir_all(&out).unwrap();
+            for f in EXPORT_FILES {
+                let _ = std::fs::remove_file(Path::new(&out).join(f));
+                std::fs::copy(db.export_dir().join(f), Path::new(&out).join(f)).unwrap();
+            }
+        }
+        drop(db);
+        cleanup(&root);
+    }
+
+    #[test]
+    fn reviews_add_resolve_and_revise() {
+        let (root, db, _) = open_with_fixture("review", 2);
+        // an agent's post routes feedback to its thread
+        let p = db.call("agent:th-9", "post_upsert", &json!({ "persona": "p000.test.city", "platform": "tiktok", "kind": "video_script",
+            "hook": "Hook", "script": "line 1\nline 2", "hashtags": "#a #b", "language": "UK" })).unwrap();
+        let id = p["id"].as_i64().unwrap();
+        assert_eq!((p["generated_by"].as_str(), p["context_ref"].as_str()), (Some("agent:th-9"), Some("th-9")));
+        assert_eq!(p["hashtags"], json!(["#a", "#b"]));
+        assert_eq!((p["language"].as_str(), p["revision"].as_i64(), p["review_status"].as_str()), (Some("uk"), Some(1), Some("pending")));
+        assert!(db.call("user", "post_upsert", &json!({ "id": id, "kind": "essay" })).is_err());
+        assert!(db.call("user", "post_upsert", &json!({ "id": id, "language": "ukrainian" })).is_err());
+        assert!(db.call("user", "post_upsert", &json!({ "id": id, "review_status": "approved" })).is_err(), "status moves through reviews only");
+        let user_post = db.call("user", "post_upsert", &json!({ "persona": "p001.test.city", "platform": "x", "body_or_path": "hi" })).unwrap();
+        assert_eq!((user_post["generated_by"].as_str(), user_post["context_ref"].as_str()), (Some("user"), Some("")));
+
+        // verdicts set the status; the latest wins; undo falls back
+        assert!(db.call("user", "post_review_add", &json!({ "post_id": id, "verdict": "meh" })).is_err());
+        let r1 = db.call("user", "post_review_add", &json!({ "post_id": id, "verdict": "like" })).unwrap();
+        assert_eq!(r1["post"]["review_status"], "liked");
+        let r2 = db.call("plugin:channels", "post_review_add", &json!({ "post_id": id, "verdict": "needs_changes", "comment": "Shorter hook" })).unwrap();
+        assert_eq!(r2["post"]["review_status"], "needs_changes");
+        assert_eq!(r2["review"]["actor"], "plugin:channels");
+        let u = db.call("user", "post_review_undo", &json!({ "id": r2["review"]["id"] })).unwrap();
+        assert_eq!(u["post"]["review_status"], "liked");
+        let r2 = db.call("user", "post_review_add", &json!({ "post_id": id, "verdict": "needs_changes", "comment": "Shorter hook" })).unwrap();
+        let d = db.call("user", "post_review_delivered", &json!({ "id": r2["review"]["id"], "to": "th-9" })).unwrap();
+        assert!(d["delivered_at"].is_string());
+        assert_eq!(d["delivered_to"], "th-9");
+
+        // the agent sees both open reviews
+        let fb = db.call("agent:th-9", "review_feedback", &json!({ "context_ref": "th-9" })).unwrap();
+        assert_eq!(fb["count"], 1);
+        assert_eq!(fb["posts"][0]["reviews"].as_array().unwrap().len(), 2);
+
+        // revise: linked copy, parent's reviews resolved, back to pending
+        let rv = db.call("agent:th-9", "post_revise", &json!({ "post_id": id, "hook": "Short hook" })).unwrap();
+        let v2 = rv["post"]["id"].as_i64().unwrap();
+        assert_eq!(rv["resolved"], 2);
+        assert_eq!((rv["post"]["revision"].as_i64(), rv["post"]["parent_post_id"].as_i64()), (Some(2), Some(id)));
+        assert_eq!((rv["post"]["hook"].as_str(), rv["post"]["script"].as_str()), (Some("Short hook"), Some("line 1\nline 2")));
+        assert_eq!((rv["post"]["review_status"].as_str(), rv["post"]["context_ref"].as_str()), (Some("pending"), Some("th-9")));
+        assert!(db.call("user", "post_revise", &json!({ "post_id": id })).unwrap_err().contains("newer revision"));
+        assert!(db.call("user", "post_review_undo", &json!({ "id": r2["review"]["id"] })).is_err(), "resolved reviews stay");
+        let fb = db.call("agent:th-9", "review_feedback", &json!({})).unwrap();
+        assert_eq!(fb["count"], 0, "nothing open");
+        let all = db.call("agent:th-9", "review_feedback", &json!({ "unresolved_only": false })).unwrap();
+        assert_eq!(all["posts"][0]["reviews"][1]["resolution_post_id"], v2);
+
+        // history: both revisions, oldest first, with reviews
+        let h = db.call("user", "post_history", &json!({ "id": v2 })).unwrap();
+        assert_eq!(h.as_array().unwrap().iter().map(|p| p["id"].as_i64().unwrap()).collect::<Vec<_>>(), vec![id, v2]);
+        assert_eq!(h[0]["reviews"].as_array().unwrap().len(), 2);
+        assert_eq!(h[0]["child_post_id"], v2);
+
+        // resolve by id / by post
+        let r3 = db.call("user", "post_review_add", &json!({ "post_id": v2, "verdict": "approve" })).unwrap();
+        db.call("agent:th-9", "post_review_resolve", &json!({ "id": r3["review"]["id"], "note": "noted" })).unwrap();
+        assert!(db.call("agent:th-9", "post_review_resolve", &json!({ "id": r3["review"]["id"] })).is_err());
+        assert_eq!(db.call("user", "post_review_resolve", &json!({ "post_id": v2 })).unwrap()["resolved"], 0);
+
+        // the feed: head revisions only, counts, filters, include_ids
+        let f = db.call("user", "review_feed", &json!({})).unwrap();
+        let ids: Vec<i64> = f["posts"].as_array().unwrap().iter().map(|p| p["id"].as_i64().unwrap()).collect();
+        assert!(ids.contains(&v2) && !ids.contains(&id), "{ids:?}");
+        assert_eq!((f["counts"]["approved"].as_i64(), f["counts"]["pending"].as_i64(), f["counts"]["total"].as_i64()), (Some(1), Some(2), Some(3)));
+        let f = db.call("user", "review_feed", &json!({ "review_status": "pending" })).unwrap();
+        assert_eq!(f["posts"].as_array().unwrap().len(), 2);
+        let f = db.call("user", "review_feed", &json!({ "review_status": "pending", "include_ids": [v2] })).unwrap();
+        assert_eq!(f["posts"].as_array().unwrap().len(), 3);
+        let f = db.call("user", "review_feed", &json!({ "platform": "tiktok", "country": "de" })).unwrap();
+        assert_eq!(f["posts"].as_array().unwrap().len(), 2, "p000 is DE: its tiktok fixture post and v2");
+        assert_eq!(f["posts"][1]["reviews"][0]["verdict"], "approve");
+        let f = db.call("user", "review_feed", &json!({ "from": "2026-10-01", "to": "2026-10-31" })).unwrap();
+        assert_eq!(f["posts"].as_array().unwrap().len(), 1, "only the dated fixture post");
+        assert!(db.call("user", "review_feed", &json!({ "review_status": "great" })).is_err());
+
+        // audited; deleting a post drops its reviews and unlinks its revision
+        let log = db.call("user", "audit", &json!({ "entity": "post_review" })).unwrap();
+        assert!(log.as_array().unwrap().len() >= 6);
+        db.call("user", "post_delete", &json!({ "id": id })).unwrap();
+        let left = db.query_readonly("SELECT count(*) AS n FROM post_reviews WHERE post_id = ?1", &[json!(id)], 1).unwrap();
+        assert_eq!(left["rows"][0]["n"], 0);
+        assert!(db.call("user", "post_history", &json!({ "id": v2 })).unwrap()[0]["parent_post_id"].is_null());
+        cleanup(&root);
+    }
+
+    #[test]
+    fn review_tables_stay_read_only_for_queries() {
+        let (root, db, _) = open_with_fixture("review-ro", 1);
+        let p = db.call("user", "post_upsert", &json!({ "persona": "p000.test.city", "platform": "x", "body_or_path": "hi" })).unwrap();
+        db.call("user", "post_review_add", &json!({ "post_id": p["id"], "verdict": "dislike", "comment": "no" })).unwrap();
+        let ok = db.query_readonly("SELECT verdict, comment FROM post_reviews", &[], 10).unwrap();
+        assert_eq!(ok["rows"][0]["verdict"], "dislike");
+        let ok = db.query_readonly("SELECT json_array_length(hashtags) AS n, review_status FROM posts", &[], 10).unwrap();
+        assert_eq!(ok["rows"][ok["row_count"].as_i64().unwrap() as usize - 1]["review_status"], "disliked");
+        for bad in [
+            "INSERT INTO post_reviews (post_id, verdict, at) VALUES (1, 'like', 'a')",
+            "UPDATE post_reviews SET resolved_at = 'x'",
+            "DELETE FROM post_reviews",
+            "UPDATE posts SET review_status = 'approved'",
+            "WITH x AS (SELECT 1) UPDATE posts SET revision = 9",
+        ] {
+            assert!(db.query_readonly(bad, &[], 10).is_err(), "must reject: {bad}");
+        }
+        assert_eq!(db.query_readonly("SELECT count(*) AS n FROM post_reviews", &[], 1).unwrap()["rows"][0]["n"], 1);
+        // agents reach the review tools through mcp_call's names
+        for t in ["review_feedback", "post_revise", "post_review_resolve"] {
+            assert!(mcp_tools().as_array().unwrap().iter().any(|d| d["name"] == t), "{t} listed");
+        }
         cleanup(&root);
     }
 
