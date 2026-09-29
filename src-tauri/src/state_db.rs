@@ -35,7 +35,8 @@ fn e<E: std::fmt::Display>(err: E) -> String {
 pub const PLATFORMS: &[&str] = &["tiktok", "instagram", "youtube", "facebook", "x", "threads", "telegram"];
 pub const STAGES: &[&str] = &["idea", "setup", "setup_done", "live", "paused", "stopped"];
 pub const ROLES: &[&str] = &["creator", "community", "engager"];
-pub const ITEM_TYPES: &[&str] = &["proxy", "phone", "email", "device_profile", "api_key", "domain", "card", "other"];
+pub const ITEM_TYPES: &[&str] =
+    &["proxy", "phone", "email", "device_profile", "api_key", "account", "domain", "card", "other"];
 pub const ITEM_STATUSES: &[&str] = &["active", "reserved", "broken", "retired"];
 pub const SUBJECT_TYPES: &[&str] = &["persona", "channel", "mcp"];
 pub const PURPOSES: &[&str] = &["egress", "login", "2fa", "api", "device", "other"];
@@ -59,6 +60,7 @@ pub fn default_purpose(item_type: &str) -> &'static str {
         "phone" => "2fa",
         "device_profile" => "device",
         "api_key" => "api",
+        "account" => "login",
         _ => "other",
     }
 }
@@ -233,7 +235,54 @@ CREATE TABLE audit_log (
   diff      TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX audit_entity ON audit_log(entity, entity_id);
-"#];
+"#,
+// v2: inventory type 'account' (a registered / purchased platform account; binds to
+// a channel for login). SQLite can't alter a CHECK, so both tables are rebuilt;
+// rows stored as type 'other' with meta.kind = 'account' become 'account'.
+r#"
+CREATE TABLE inventory_items_v2 (
+  id         INTEGER PRIMARY KEY,
+  type       TEXT NOT NULL CHECK (type IN ('proxy','phone','email','device_profile','api_key','account','domain','card','other')),
+  label      TEXT NOT NULL,
+  provider   TEXT NOT NULL DEFAULT '',
+  geo        TEXT NOT NULL DEFAULT '',
+  cost_month REAL,
+  currency   TEXT NOT NULL DEFAULT 'EUR',
+  status     TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','reserved','broken','retired')),
+  capacity   INTEGER CHECK (capacity IS NULL OR capacity >= 1),
+  secret_ref TEXT,
+  meta       TEXT NOT NULL DEFAULT '{}',
+  notes      TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+INSERT INTO inventory_items_v2
+  SELECT id,
+         CASE WHEN type = 'other' AND json_valid(meta) AND json_extract(meta, '$.kind') = 'account' THEN 'account' ELSE type END,
+         label, provider, geo, cost_month, currency, status, capacity, secret_ref, meta, notes, created_at, updated_at
+  FROM inventory_items;
+INSERT INTO audit_log (at, actor, action, entity, entity_id, diff)
+  SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), 'migration', 'update', 'inventory_item', CAST(n.id AS TEXT),
+         '{"type":{"from":"other","to":"account"}}'
+  FROM inventory_items_v2 n JOIN inventory_items o ON o.id = n.id WHERE o.type = 'other' AND n.type = 'account';
+DROP TABLE inventory_items;
+ALTER TABLE inventory_items_v2 RENAME TO inventory_items;
+CREATE TABLE inventory_requirements_v2 (
+  id        INTEGER PRIMARY KEY,
+  platform  TEXT NOT NULL DEFAULT '*',
+  type      TEXT NOT NULL CHECK (type IN ('proxy','phone','email','device_profile','api_key','account','domain','card','other')),
+  scope     TEXT NOT NULL CHECK (scope IN ('persona','channel')),
+  purpose   TEXT NOT NULL CHECK (purpose IN ('egress','login','2fa','api','device','other')),
+  count     INTEGER NOT NULL DEFAULT 1 CHECK (count >= 1),
+  geo_match INTEGER NOT NULL DEFAULT 0,
+  notes     TEXT NOT NULL DEFAULT '',
+  UNIQUE (platform, type, scope, purpose)
+);
+INSERT INTO inventory_requirements_v2 SELECT id, platform, type, scope, purpose, count, geo_match, notes FROM inventory_requirements;
+DROP TABLE inventory_requirements;
+ALTER TABLE inventory_requirements_v2 RENAME TO inventory_requirements;
+"#,
+];
 
 fn migrate(conn: &mut Connection) -> R<usize> {
     conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL, applied_at TEXT NOT NULL)")
@@ -247,14 +296,35 @@ fn migrate(conn: &mut Connection) -> R<usize> {
             MIGRATIONS.len()
         ));
     }
-    for (i, sql) in MIGRATIONS.iter().enumerate().skip(current) {
-        let tx = conn.transaction().map_err(e)?;
-        tx.execute_batch(sql).map_err(|err| format!("migration {}: {err}", i + 1))?;
-        tx.execute("INSERT INTO schema_version (version, applied_at) VALUES (?1, ?2)", params![i as i64 + 1, now_iso()])
-            .map_err(e)?;
-        tx.commit().map_err(e)?;
+    migrate_range(conn, current, MIGRATIONS.len())
+}
+
+/// Apply migrations `from+1 ..= to`. Table rebuilds need foreign keys off
+/// (they can't be switched inside a transaction); each migration checks
+/// them before it commits.
+fn migrate_range(conn: &mut Connection, from: usize, to: usize) -> R<usize> {
+    if from >= to {
+        return Ok(to);
     }
-    Ok(MIGRATIONS.len())
+    conn.execute_batch("PRAGMA foreign_keys = OFF").map_err(e)?;
+    let result = (|| -> R<()> {
+        for (i, sql) in MIGRATIONS.iter().enumerate().take(to).skip(from) {
+            let tx = conn.transaction().map_err(e)?;
+            tx.execute_batch(sql).map_err(|err| format!("migration {}: {err}", i + 1))?;
+            let broken: i64 = tx
+                .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r.get(0))
+                .map_err(e)?;
+            if broken > 0 {
+                return Err(format!("migration {}: {broken} rows break foreign keys", i + 1));
+            }
+            tx.execute("INSERT INTO schema_version (version, applied_at) VALUES (?1, ?2)", params![i as i64 + 1, now_iso()])
+                .map_err(e)?;
+            tx.commit().map_err(e)?;
+        }
+        Ok(())
+    })();
+    conn.execute_batch("PRAGMA foreign_keys = ON").map_err(e)?;
+    result.map(|_| to)
 }
 
 // ── the database ─────────────────────────────────────────────────────────────
@@ -285,9 +355,10 @@ pub fn user() -> R<Arc<StateDb>> {
             eprintln!("state.db: import of {} failed: {err}", legacy.display());
         }
     }
-    if !db.export_dir().join("channels.json").exists() {
-        db.changed();
-    }
+    // Fresh snapshots on every start, and whenever another process (sqlite3, a
+    // script) commits to the file: its writes don't pass through `write`.
+    db.changed();
+    db.watch_external(Duration::from_secs(2));
     *slot = Some(db.clone());
     Ok(db)
 }
@@ -338,6 +409,26 @@ impl StateDb {
         if let Ok(mut slot) = self.exporter.lock() {
             *slot = Some(tx);
         }
+    }
+
+    /// Poll `PRAGMA data_version`, which moves only when another connection
+    /// commits, and export when it does.
+    pub fn watch_external(self: &Arc<Self>, every: Duration) {
+        let db = Arc::downgrade(self);
+        std::thread::spawn(move || {
+            let mut last: Option<i64> = None;
+            loop {
+                std::thread::sleep(every);
+                let Some(db) = db.upgrade() else { return };
+                let v = db.read(|c| c.query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0)).map_err(e));
+                if let Ok(v) = v {
+                    if last.is_some_and(|l| l != v) {
+                        db.changed();
+                    }
+                    last = Some(v);
+                }
+            }
+        });
     }
 
     fn changed(&self) {
@@ -1720,6 +1811,23 @@ fn bind(conn: &Connection, actor: &str, p: &Value) -> R<Value> {
         return Err(format!("{label} (#{item}) is {status}; set it active before binding"));
     }
     let (st, sid) = subject_ref(conn, p)?;
+    if typ == "account" {
+        // An account is one platform login: it belongs to one channel of that platform.
+        if st != "channel" {
+            return Err(format!("{label} is a platform account: bind it to a channel (persona/platform), not a {st}"));
+        }
+        let want: Option<String> = conn
+            .query_row("SELECT json_extract(meta, '$.platform') FROM inventory_items WHERE id = ?1 AND json_valid(meta)", [item], |r| r.get(0))
+            .optional()
+            .map_err(e)?
+            .flatten();
+        let have: String = conn.query_row("SELECT platform FROM channels WHERE id = ?1", [sid.parse::<i64>().unwrap_or(0)], |r| r.get(0)).map_err(e)?;
+        if let Some(want) = want.filter(|w| !w.is_empty()) {
+            if want.to_ascii_lowercase() != have {
+                return Err(format!("{label} is a {want} account; it can't log in to a {have} channel"));
+            }
+        }
+    }
     let purpose = opt_str(p, "purpose").map(|s| s.to_ascii_lowercase()).unwrap_or_else(|| default_purpose(&typ).to_string());
     if !PURPOSES.contains(&purpose.as_str()) {
         return Err(format!("purpose must be one of: {}", PURPOSES.join(", ")));
@@ -2319,7 +2427,7 @@ pub fn mcp_tools() -> Value {
     json!([
         {
             "name": "state_query",
-            "description": "Read-only SQL (SQLite) over the Channels network state in ~/AgentArea/state.db. One SELECT or WITH statement; writes, PRAGMA and ATTACH are rejected; at most 1000 rows (default 200). Tables: personas(handle PK, name, emoji, niche, category, country DE|PL|IT, city, languages JSON, target_audience, hypothesis, personality JSON, refs JSON, soul_path → ~/AgentArea/channels/<soul_path>), channels(id, persona, platform tiktok|instagram|youtube|facebook|x|threads|telegram, handle_registered, url, stage idea|setup|setup_done|live|paused|stopped, role creator|community|engager, plan, kpi_metric, kpi_target, mcp, notes), channel_tasks(channel_id, position, type, cadence, notes), budget(channel_id, kind planned|spent, period 'monthly'|'YYYY-MM', currency, proxy, account, content, ads, other), metrics(channel_id, date, reach, followers, posts_published, cost, currency), posts(id, channel_id, scheduled_at, status draft|scheduled|published, title, body_or_path), inventory_items(id, type proxy|phone|email|device_profile|api_key|domain|card|other, label, provider, geo, cost_month, currency, status active|reserved|broken|retired, capacity NULL=unlimited, secret_ref = vault secret NAME, meta JSON), bindings(id, item_id, subject_type persona|channel|mcp, subject_id, purpose egress|login|2fa|api|device|other, since, until NULL = active), inventory_requirements(platform|'*', type, scope persona|channel, purpose, count, geo_match), audit_log(at, actor, action, entity, entity_id, diff). Use json_extract() for JSON columns. Full schema: ~/AgentArea/channels/SCHEMA.md.",
+            "description": "Read-only SQL (SQLite) over the Channels network state in ~/AgentArea/state.db. One SELECT or WITH statement; writes, PRAGMA and ATTACH are rejected; at most 1000 rows (default 200). Tables: personas(handle PK, name, emoji, niche, category, country DE|PL|IT, city, languages JSON, target_audience, hypothesis, personality JSON, refs JSON, soul_path → ~/AgentArea/channels/<soul_path>), channels(id, persona, platform tiktok|instagram|youtube|facebook|x|threads|telegram, handle_registered, url, stage idea|setup|setup_done|live|paused|stopped, role creator|community|engager, plan, kpi_metric, kpi_target, mcp, notes), channel_tasks(channel_id, position, type, cadence, notes), budget(channel_id, kind planned|spent, period 'monthly'|'YYYY-MM', currency, proxy, account, content, ads, other), metrics(channel_id, date, reach, followers, posts_published, cost, currency), posts(id, channel_id, scheduled_at, status draft|scheduled|published, title, body_or_path), inventory_items(id, type proxy|phone|email|device_profile|api_key|account|domain|card|other, label, provider, geo, cost_month, currency, status active|reserved|broken|retired, capacity NULL=unlimited, secret_ref = vault secret NAME, meta JSON), bindings(id, item_id, subject_type persona|channel|mcp, subject_id, purpose egress|login|2fa|api|device|other, since, until NULL = active), inventory_requirements(platform|'*', type, scope persona|channel, purpose, count, geo_match), audit_log(at, actor, action, entity, entity_id, diff). Use json_extract() for JSON columns. Full schema: ~/AgentArea/channels/SCHEMA.md.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2346,7 +2454,7 @@ pub fn mcp_tools() -> Value {
         },
         {
             "name": "inventory_add",
-            "description": "Add an inventory item (a proxy, phone number, email, device/browser profile, API key, domain, card…). Credentials never go here: store them in the user's vault (AgentArea → Secrets) and put the secret's NAME in secret_ref. meta holds plain facts (host, port, protocol, ip, address, number, profile_id…); keys like password/token/secret are rejected. capacity = how many personas/channels/MCPs may share it (null = unlimited; a persona's proxy is usually 1). Returns the item with its id.",
+            "description": "Add an inventory item (a proxy, phone number, email, device/browser profile, API key, platform account, domain, card…). An account is one registered/purchased platform login: meta {platform, username, url, email_item (id of its email item), recovery_email_item, has_2fa}; it binds to a channel of the same platform with purpose login. Credentials never go here: store them in the user's vault (AgentArea → Secrets) and put the secret's NAME in secret_ref. meta holds plain facts (host, port, protocol, ip, address, number, profile_id…); keys like password/token/secret are rejected. capacity = how many personas/channels/MCPs may share it (null = unlimited; a persona's proxy is usually 1). Returns the item with its id.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2561,6 +2669,45 @@ mod tests {
         drop(db);
         let db = StateDb::open(&root).unwrap(); // no re-run, no duplicate seeds
         assert_eq!(db.call("user", "requirements", &json!({})).unwrap().as_array().unwrap().len(), 4);
+        cleanup(&root);
+    }
+
+    #[test]
+    fn migration_2_turns_account_rows_into_accounts() {
+        let root = temp_root("v2");
+        {
+            let mut conn = Connection::open(root.join("state.db")).unwrap();
+            conn.execute_batch("CREATE TABLE schema_version (version INTEGER NOT NULL, applied_at TEXT NOT NULL)").unwrap();
+            migrate_range(&mut conn, 0, 1).unwrap();
+            conn.execute_batch(
+                r#"INSERT INTO personas (handle, country, created_at, updated_at) VALUES ('p', 'PL', 'a', 'a');
+                   INSERT INTO channels (persona, platform, created_at, updated_at) VALUES ('p', 'tiktok', 'a', 'a'), ('p', 'x', 'a', 'a');
+                   INSERT INTO inventory_items (id, type, label, meta, created_at, updated_at) VALUES
+                     (1, 'other', 'TikTok · acc', '{"kind":"account","platform":"tiktok","username":"acc","email_item":2}', 'a', 'a'),
+                     (2, 'email', 'acc@outlook.com', '{}', 'a', 'a'),
+                     (3, 'other', 'misc', 'not json', 'a', 'a');
+                   INSERT INTO bindings (item_id, subject_type, subject_id, purpose, since) VALUES (2, 'persona', 'p', 'login', 'a');"#,
+            )
+            .unwrap();
+        }
+        let db = StateDb::open(&root).unwrap();
+        let types = db.query_readonly("SELECT id, type FROM inventory_items ORDER BY id", &[], 10).unwrap();
+        assert_eq!(types["rows"][0]["type"], "account");
+        assert_eq!(types["rows"][1]["type"], "email");
+        assert_eq!(types["rows"][2]["type"], "other");
+        assert_eq!(db.call("user", "bindings", &json!({})).unwrap().as_array().unwrap().len(), 1, "bindings survive the rebuild");
+        let fk: i64 = db.read(|c| c.query_row("PRAGMA foreign_keys", [], |r| r.get(0)).map_err(e)).unwrap();
+        assert_eq!(fk, 1);
+        let audit = db.call("user", "audit", &json!({ "actor": "migration" })).unwrap();
+        assert_eq!(audit.as_array().unwrap().len(), 1);
+        // accounts bind to a channel of their platform only
+        assert!(db.call("user", "inventory_bind", &json!({ "item_id": 1, "subject_type": "persona", "subject_id": "p" })).unwrap_err().contains("bind it to a channel"));
+        assert!(db.call("user", "inventory_bind", &json!({ "item_id": 1, "subject_type": "channel", "subject_id": "p/x" })).unwrap_err().contains("tiktok account"));
+        let r = db.call("user", "inventory_bind", &json!({ "item_id": 1, "subject_type": "channel", "subject_id": "p/tiktok" })).unwrap();
+        assert_eq!(r["purpose"], "login");
+        db.call("user", "requirement_add", &json!({ "platform": "tiktok", "type": "account", "scope": "channel" })).unwrap();
+        let g = db.call("user", "gaps", &json!({ "type": "account" })).unwrap();
+        assert_eq!(g["requirements"][0]["missing_count"], 0);
         cleanup(&root);
     }
 
