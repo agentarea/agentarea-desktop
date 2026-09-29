@@ -1,10 +1,8 @@
 // Channels plugin core, shared by index.html and sidebar.html (and Node, for checks).
-// Data = plain files in the granted folder (format: SCHEMA.md there):
-//   <persona-slug>/README.md   one folder per persona: front matter + story
-//   channels.json              array: one object per channel (persona × platform): stage, handle, KPI target…
-//   metrics.csv                history rows: date, persona, platform, reach, cost, currency, followers, posts_published
-//   posts.json                 array: planned / published posts
-// Used by the plugin pages (bridge I/O) and by the standalone grid.html (fetch I/O).
+// Data = ~/AgentArea/state.db (format: SCHEMA.md in the data folder), read through the
+// "state" bridge inside the app, or from the read-only snapshots it writes to
+// ~/AgentArea/channels/export/*.json (standalone grid.html). SOUL.md files stay in the
+// persona folders.
 (function (root) {
   'use strict';
 
@@ -81,34 +79,32 @@
   const json = (src, fallback) => { if (!String(src || '').trim()) return fallback; const v = JSON.parse(src); return v; };
 
   /**
-   * Read the data folder. `io` = { list(): Promise<string[] | null> (sub-folder names, or null
-   * when the host can't list — then persona slugs come from channels.json), read(path): Promise<string> }.
-   * Files: channels.json, metrics.csv, posts.json, <slug>/README.md. `sig` changes when any file does.
+   * Read the network. The source of truth is ~/AgentArea/state.db; `io` gives either
+   *   io.snapshot(): Promise<{rev, personas, channels, posts, metrics, inventory, bindings, gaps}>  (the "state" bridge), or
+   *   io.read(path) of the read-only snapshots in export/ (personas.json, channels.json, …; standalone grid.html).
+   * SOUL.md stays a file in each persona folder: io.read(`<soul_path>`). `sig` changes when anything does.
    */
+  const SNAPSHOT_FILES = ['personas', 'channels', 'posts', 'metrics', 'inventory', 'bindings', 'gaps'];
   async function load(io) {
-    const opt = (path) => io.read(path).catch(() => '');
-    const [channels, metrics, posts] = await Promise.all([opt('channels.json'), opt('metrics.csv'), opt('posts.json')]);
-    let errors = [];
-    let chList = [];
-    try { chList = json(channels, []); if (!Array.isArray(chList)) throw new Error('expected an array'); } catch (e) { errors.push(`channels.json: ${e.message}`); chList = []; }
-    let slugs = await io.list();
-    if (!slugs) slugs = [...new Set(chList.map((c) => low(c && c.persona)).filter(Boolean))];
-    // SOUL.md (current layout) or README.md (older folders). The first persona decides which name to try
-    // first for the rest, so a static server logs at most one miss.
-    let order = ['SOUL.md', 'README.md'];
-    const readPersona = async (slug) => {
-      let text = null;
-      for (const name of order) { try { text = await io.read(`${slug}/${name}`); if (name !== order[0]) order = [name, ...order.filter((x) => x !== name)]; break; } catch { /* try next */ } }
-      if (text === null) return null;
-      const config = await io.read(`${slug}/config.json`).catch(() => '');
-      return { slug, folder: slug, text, config };
+    const errors = [];
+    let snap = {}, snapSig = '';
+    if (io.snapshot) {
+      try { snap = await io.snapshot(); snapSig = String(snap.rev || ''); } catch (e) { errors.push(`state: ${e.message}`); }
+    } else {
+      const texts = await Promise.all(SNAPSHOT_FILES.map((f) => io.read(`export/${f}.json`).catch((e) => { if (f === 'channels' || f === 'personas') errors.push(`export/${f}.json: ${e.message}`); return ''; })));
+      SNAPSHOT_FILES.forEach((f, i) => { try { snap[f] = json(texts[i], null); } catch (e) { errors.push(`export/${f}.json: ${e.message}`); } });
+      snapSig = texts.join('\u0001');
+    }
+    const arr = (v) => (Array.isArray(v) ? v : []);
+    const rawPersonas = arr(snap.personas);
+    const texts = await Promise.all(rawPersonas.map((p) => io.read(p.soul_path || `${p.handle}/SOUL.md`).catch(() => '')));
+    const personas = rawPersonas.map((p, i) => ({ slug: p.handle, folder: p.handle, text: texts[i], config: p }));
+    return {
+      personas, channels: arr(snap.channels), metrics: arr(snap.metrics), posts: arr(snap.posts),
+      inventory: arr(snap.inventory), bindings: arr(snap.bindings),
+      gaps: snap.gaps && typeof snap.gaps === 'object' ? snap.gaps : { requirements: [], warnings: [], by_subject: {} },
+      errors, sig: snapSig + '\u0002' + texts.join('\u0001'),
     };
-    const first = slugs.length ? [await readPersona(slugs[0])] : [];
-    const personas = first.concat(await Promise.all(slugs.slice(1).map(readPersona))).filter(Boolean);
-    let postList = [];
-    try { postList = json(posts, []); if (!Array.isArray(postList)) throw new Error('expected an array'); } catch (e) { errors.push(`posts.json: ${e.message}`); postList = []; }
-    return { personas, channels: chList, metrics: parseCsv(metrics), posts: postList, errors,
-      sig: [channels, metrics, posts, ...personas.map((p) => p.slug + '\u0000' + p.text + '\u0000' + p.config)].join('\u0001') };
   }
 
   const DAY = 86400000;
@@ -143,7 +139,7 @@
     for (const p of data.personas) {
       const { meta, body } = frontMatter(p.text);
       let cfg = {};
-      try { cfg = p.config ? JSON.parse(p.config) : {}; } catch { cfg = {}; }
+      try { cfg = typeof p.config === 'string' ? (p.config ? JSON.parse(p.config) : {}) : (p.config || {}); } catch { cfg = {}; }
       const title = (/^#\s+(.+)$/m.exec(body) || [])[1] || '';
       add(p.slug, {
         folder: p.folder, name: cfg.name || title || meta.name || p.slug, niche: cfg.niche || meta.name || '', emoji: cfg.emoji || meta.emoji || '👤',
