@@ -678,8 +678,9 @@ export const useAppStore = create<AppState>((set, get) => {
             cwd: session.cwd,
             model: session.model,
             effort: session.effort,
-            // Cloud data sources: the agent reads workspace files as this user.
-            workspace: get().workspaceId,
+            // Cloud data sources: the agent reads workspace files as this user,
+            // under /v1/workspaces/{slug}/ (the API selects the workspace by path).
+            workspace: get().workspaces.find((w) => w.id === get().workspaceId)?.slug ?? null,
             workspaceName: get().workspaces.find((w) => w.id === get().workspaceId)?.name ?? null,
             apiBase: config.apiBaseUrl,
             toolsKey: [...session.mcpIds, ...session.skillIds].sort().join(','),

@@ -48,7 +48,7 @@ export async function runLocal(args: {
   cwd: string | null;
   model: string | null;
   effort: string | null;
-  /** cloud data sources: the workspace (header ref + display name) and API base */
+  /** cloud data sources: the workspace (slug, for `/v1/workspaces/{slug}/` paths; display name) and API base */
   workspace: string | null;
   workspaceName: string | null;
   apiBase: string;

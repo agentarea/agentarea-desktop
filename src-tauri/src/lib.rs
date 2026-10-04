@@ -343,7 +343,7 @@ async fn run_agent(
 fn start_turn(app: &AppHandle, a: TurnArgs) -> Result<(), String> {
     let session_id = a.session_id.as_str();
     check_id(session_id)?;
-    // The workspace goes into a header, the base into URLs: keep both plain.
+    // The workspace slug and the base go into URLs: keep both plain.
     if let Some(w) = &a.workspace {
         if w.is_empty() || w.len() > 128 || !w.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
             return Err(format!("invalid workspace: {w}"));

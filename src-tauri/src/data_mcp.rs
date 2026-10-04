@@ -45,7 +45,8 @@ pub struct Source {
 pub struct CloudAccess {
     pub api_base: String,
     pub token: String,
-    /// `X-AgentArea-Workspace` (id or slug); None = the user's default
+    /// The workspace slug: every call goes to `/v1/workspaces/{slug}/...` (the
+    /// API selects the workspace by path only). None = unscoped `/v1/...`.
     pub workspace: Option<String>,
 }
 
@@ -275,15 +276,22 @@ fn api_error(status: u16, what: &str) -> String {
     }
 }
 
+/// `path` (`/v1/...`) under the turn's workspace: `/v1/workspaces/{slug}/...`.
+fn scoped(cloud: &CloudAccess, path: &str) -> String {
+    match (&cloud.workspace, path.strip_prefix("/v1/")) {
+        (Some(slug), Some(rest)) => format!("/v1/workspaces/{}/{rest}", crate::vault::percent_encode(slug)),
+        _ => path.to_string(),
+    }
+}
+
 async fn get(cloud: &CloudAccess, path: &str) -> Result<reqwest::Response, String> {
     let client = reqwest::Client::builder().timeout(HTTP_TIMEOUT).build().map_err(|e| e.to_string())?;
-    let mut req = client
-        .get(format!("{}{path}", cloud.api_base.trim_end_matches('/')))
-        .header("Authorization", format!("Bearer {}", token_for(cloud)));
-    if let Some(w) = &cloud.workspace {
-        req = req.header("X-AgentArea-Workspace", w);
-    }
-    req.send().await.map_err(|e| format!("AgentArea request failed: {}", e.without_url()))
+    client
+        .get(format!("{}{}", cloud.api_base.trim_end_matches('/'), scoped(cloud, path)))
+        .header("Authorization", format!("Bearer {}", token_for(cloud)))
+        .send()
+        .await
+        .map_err(|e| format!("AgentArea request failed: {}", e.without_url()))
 }
 
 async fn fetch_listing(cloud: &CloudAccess) -> Result<Listing, String> {
@@ -510,6 +518,14 @@ mod tests {
     }
 
     #[test]
+    fn scopes_paths_by_workspace_slug() {
+        let c = |w: Option<&str>| CloudAccess { api_base: "x".into(), token: "t".into(), workspace: w.map(String::from) };
+        assert_eq!(scoped(&c(Some("acme")), "/v1/files"), "/v1/workspaces/acme/files");
+        assert_eq!(scoped(&c(Some("acme")), "/v1/files/download/a%20b.md"), "/v1/workspaces/acme/files/download/a%20b.md");
+        assert_eq!(scoped(&c(None), "/v1/files"), "/v1/files", "no workspace: the user's default");
+    }
+
+    #[test]
     fn tells_text_from_binary() {
         assert!(is_text(Some("text/markdown; charset=utf-8"), "x"));
         assert!(is_text(Some("application/json"), "x"));
@@ -607,10 +623,12 @@ mod tests {
                         auth = h[14..].trim().to_string();
                     }
                     if lower.starts_with("x-agentarea-workspace:") {
-                        ws = h[22..].trim().to_string();
+                        ws = format!("header:{}", h[22..].trim());
                     }
                 }
-                let _ = tx.send(format!("{path} {auth} {ws}"));
+                let _ = tx.send(format!("{path} {auth}{ws}"));
+                // The API selects the workspace by path only.
+                let path = path.strip_prefix("/v1/workspaces/acme").map(|p| format!("/v1{p}")).unwrap_or(path);
                 let (status, ct, body): (u16, &str, Vec<u8>) = if auth != "Bearer at-123" {
                     (401, "application/json", b"{\"detail\":\"nope\"}".to_vec())
                 } else if path == "/v1/files" {
@@ -641,18 +659,18 @@ mod tests {
     #[test]
     fn cloud_tools_against_a_fake_api() {
         let (base, seen) = fake_api(5);
-        let t = turn(Some(CloudAccess { api_base: base, token: "at-123".into(), workspace: Some("ws-1".into()) }));
+        let t = turn(Some(CloudAccess { api_base: base, token: "at-123".into(), workspace: Some("acme".into()) }));
         let (text, err) = call(&t, "cloud_list", json!({"prefix":"wiki/"}));
         assert!(!err, "{text}");
         assert!(text.contains("\"wiki/index.md\"") && text.contains("logo.png"), "{text}");
-        assert_eq!(seen.recv().unwrap(), "/v1/files Bearer at-123 ws-1");
+        assert_eq!(seen.recv().unwrap(), "/v1/workspaces/acme/files Bearer at-123", "path-scoped, no workspace header");
         let (_, err) = call(&t, "cloud_list", json!({}));
         assert!(!err, "second list is served from the cache");
 
         let (text, err) = call(&t, "cloud_read", json!({"path":"agentarea://files/wiki/index.md"}));
         assert!(!err, "{text}");
         assert_eq!(text, "# Cloud index\nkey: [secret:TOKEN]\n", "content is redacted");
-        assert_eq!(seen.recv().unwrap(), "/v1/files/download/wiki/index.md Bearer at-123 ws-1");
+        assert_eq!(seen.recv().unwrap(), "/v1/workspaces/acme/files/download/wiki/index.md Bearer at-123");
 
         let (text, err) = call(&t, "cloud_read", json!({"path":"wiki/logo.png"}));
         assert!(err && text.contains("not a text file"), "{text}");
@@ -685,7 +703,7 @@ mod tests {
         let hints = [("LLM Wiki".to_string(), "wiki/".to_string())];
         let srcs = sources(&roots, &cwd, Some(("Acme", &hints)));
         let hint = agent_hint(&srcs);
-        let cloud = CloudAccess { api_base: base, token: "at-123".into(), workspace: Some("ws-1".into()) };
+        let cloud = CloudAccess { api_base: base, token: "at-123".into(), workspace: Some("acme".into()) };
         let data = server.issue_data_token(DataTurn::new("t", srcs, Some(cloud), Redactor::new([("TOKEN", "sk-secret-value")])));
 
         let mut cmd = std::process::Command::new(crate::cli_bin(runner));
@@ -747,7 +765,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&wiki);
         assert!(stdout.contains("list_sources"), "listed sources");
         assert!(stdout.contains("cloud_read"), "called cloud_read");
-        assert!(requests.iter().any(|r| r.starts_with("/v1/files/download/wiki/index.md Bearer at-123 ws-1")), "API hit with the token");
+        assert!(requests.iter().any(|r| r.starts_with("/v1/workspaces/acme/files/download/wiki/index.md Bearer at-123")), "API hit with the token");
         assert!(stdout.contains("Cloud index") && stdout.contains("[secret:TOKEN]"), "cloud content came back, redacted");
         assert!(!stdout.contains("sk-secret-value"), "never unredacted");
         assert!(stdout.matches(&marker).count() >= 2, "local file was read (marker in tool result and answer)");
