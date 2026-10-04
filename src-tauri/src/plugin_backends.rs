@@ -9,8 +9,9 @@
 //! MCP server `plugin_<id>`; the plugin's own page reaches it through the
 //! bridge (`plugin.tools` / `plugin.call`), which calls the same endpoint.
 //!
-//! Nothing is used before the user approves the plugin folder as reviewed
-//! (plugin_trust.rs): no local process, no cloud instance.
+//! Nothing is used before the user approves the plugin as reviewed
+//! (plugin_trust.rs): a local server runs only from the approved snapshot,
+//! and a cloud instance is used only if that very instance was approved.
 //!
 //! Placement (`auto` | `local` | `cloud`, per plugin in plugins-state.json) is
 //! resolved against the active workspace the frontend reports
@@ -85,6 +86,7 @@ impl ServerDecl {
             if l.command.first().is_none_or(|c| c.trim().is_empty()) {
                 return Err("server.local.command is empty".into());
             }
+            check_command(&l.command)?;
             if l.command.iter().chain(l.env.values()).any(|s| s.contains('\0')) {
                 return Err("server.local must not contain NUL".into());
             }
@@ -100,6 +102,47 @@ impl ServerDecl {
         }
         Ok(())
     }
+}
+
+/// Programs that fetch and run registry code at whatever version is current:
+/// what would run isn't what was reviewed. Vendor the dependency instead.
+const DOWNLOADERS: [&str; 6] = ["npx", "pnpx", "bunx", "uvx", "pipx", "yarn"];
+
+/// A path that leaves the plugin folder: absolute, home-relative, or with `..`.
+fn leaves_folder(arg: &str) -> bool {
+    arg.split(['=', ':', ',']).any(|part| {
+        let part = part.trim_matches(|c| c == '"' || c == '\'');
+        part.starts_with('/') || part.starts_with('~') || part.split('/').any(|seg| seg == "..")
+    })
+}
+
+/// The command runs only what the approval covers: no downloaders, and
+/// arguments that stay inside the plugin folder (the interpreter itself,
+/// `command[0]`, may be any path; the review shows where it resolves).
+fn check_command(command: &[String]) -> Result<(), String> {
+    let program = command[0].rsplit('/').next().unwrap_or("");
+    let dlx = |w: &str| command.get(1).is_some_and(|a| a == w);
+    if DOWNLOADERS.contains(&program)
+        || (program == "npm" && dlx("exec"))
+        || (program == "pnpm" && dlx("dlx"))
+        || (program == "bun" && dlx("x"))
+        || (program == "uv" && dlx("tool"))
+    {
+        return Err(format!(
+            "server.local.command uses {program}, which downloads code at run time; vendor the dependency into the plugin folder"
+        ));
+    }
+    if let Some(a) = command[1..].iter().find(|a| leaves_folder(a)) {
+        return Err(format!("server.local.command argument \"{a}\" points outside the plugin folder"));
+    }
+    Ok(())
+}
+
+/// Env variables that change what an interpreter loads; flagged in the review.
+pub fn risky_env(name: &str) -> bool {
+    ["NODE_OPTIONS", "NODE_PATH", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME", "PERL5LIB", "RUBYOPT", "BASH_ENV"].contains(&name)
+        || name.starts_with("LD_")
+        || name.starts_with("DYLD_")
 }
 
 // ── placement ────────────────────────────────────────────────────────────────
@@ -131,6 +174,20 @@ pub struct Placement {
     /// the matched cloud instance (resolved = cloud)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub instance: Option<String>,
+    /// something for the user to review, e.g. a cloud instance that appeared
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
+}
+
+/// What the user approved for a plugin (plugins.rs checks the signature and
+/// epoch): the snapshot that runs, and the cloud instances it may use.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Grant {
+    pub fingerprint: String,
+    /// `<app data>/plugin-snapshots/<id>/<fingerprint>`
+    pub snapshot: PathBuf,
+    /// `binding()` keys: `<env>/<slug>/<instance id>`
+    pub instances: Vec<String>,
 }
 
 /// One MCP instance of the active workspace (`GET /v1/workspaces/{slug}/mcp-server-instances/`).
@@ -154,37 +211,66 @@ pub struct Context {
 
 pub const NOT_ALLOWED: &str = "not allowed yet: review and allow the backend in Apps → Plugins";
 
-/// Where `decl` runs under `mode` in `ctx`.
+/// The approval key of a cloud instance: which instance, in which workspace.
+pub fn binding(ctx: &Context, instance_id: &str) -> String {
+    format!("{}/{}/{instance_id}", ctx.env, ctx.slug.as_deref().unwrap_or("-"))
+}
+
+fn unreviewed(c: &CloudDecl, ctx: &Context) -> String {
+    format!("the workspace has an MCP instance \"{}\" in {} that you haven't reviewed: review it in Apps → Plugins", c.instance, ctx.slug.as_deref().unwrap_or("this workspace"))
+}
+
+/// Where `decl` runs under `mode` in `ctx`, given what the user approved.
 ///
 /// - cloud is possible when the workspace has exactly one MCP instance whose
-///   `name` equals `cloud.instance` (= `plugin:<id>`; exact, case-sensitive;
-///   names are unique per workspace on the platform);
-/// - local is possible when `local` is declared;
-/// - `auto` prefers cloud, then local; `local` / `cloud` take only that one;
-/// - either way only once the user approved the plugin (`approved`).
-pub fn resolve(decl: &ServerDecl, mode: Mode, approved: bool, ctx: &Context) -> Placement {
-    let cloud = decl.cloud.as_ref().map(|c| cloud_instance(c, ctx));
+///   `name` equals `cloud.instance` (= `plugin:<id>`; exact, case-sensitive)
+///   **and** that instance (id, in this workspace) was approved;
+/// - local is possible when `local` is declared and the plugin is approved;
+/// - `auto` prefers an approved cloud instance, then local. An instance that
+///   appeared but wasn't reviewed never takes over: auto stays local and
+///   says so in `notice`.
+pub fn resolve(decl: &ServerDecl, mode: Mode, grant: Option<&Grant>, ctx: &Context) -> Placement {
+    let cloud = decl.cloud.as_ref().map(|c| (c, cloud_instance(c, ctx)));
     let local = decl.local.is_some();
-    let pick: Result<(Where, Option<String>), String> = match mode {
-        Mode::Cloud => match cloud {
-            Some(Ok(id)) => Ok((Where::Cloud, Some(id))),
-            Some(Err(e)) => Err(e),
-            None => Err("the plugin declares no cloud instance".into()),
-        },
-        Mode::Local if local => Ok((Where::Local, None)),
-        Mode::Local => Err("the plugin declares no local server".into()),
-        Mode::Auto => match (cloud, local) {
-            (Some(Ok(id)), _) => Ok((Where::Cloud, Some(id))),
-            (_, true) => Ok((Where::Local, None)),
-            (Some(Err(e)), false) => Err(e),
-            (None, false) => Err("the plugin declares no server".into()),
-        },
+    let none = |reason: String| Placement { mode, resolved: Where::Unavailable, reason: Some(reason), instance: None, notice: None };
+    let at = |resolved, instance, notice| Placement { mode, resolved, reason: None, instance, notice };
+    let Some(grant) = grant else {
+        let declared = match mode {
+            Mode::Cloud => decl.cloud.is_some(),
+            Mode::Local => local,
+            Mode::Auto => true,
+        };
+        return none(if declared { NOT_ALLOWED.into() } else if mode == Mode::Cloud {
+            "the plugin declares no cloud instance".into()
+        } else {
+            "the plugin declares no local server".into()
+        });
     };
-    let none = |reason: String| Placement { mode, resolved: Where::Unavailable, reason: Some(reason), instance: None };
-    match pick {
-        Ok(_) if !approved => none(NOT_ALLOWED.into()),
-        Ok((resolved, instance)) => Placement { mode, resolved, reason: None, instance },
-        Err(e) => none(e),
+    // Some(Ok(id)) approved instance; Some(Err) why not; None no cloud declared.
+    let found_any = cloud.as_ref().is_some_and(|(_, f)| f.is_ok());
+    let cloud_ok: Option<Result<String, String>> = cloud.map(|(c, found)| {
+        let id = found?;
+        if grant.instances.contains(&binding(ctx, &id)) {
+            Ok(id)
+        } else {
+            Err(unreviewed(c, ctx))
+        }
+    });
+    let found_unreviewed = found_any && cloud_ok.as_ref().is_some_and(|r| r.is_err());
+    match mode {
+        Mode::Cloud => match cloud_ok {
+            Some(Ok(id)) => at(Where::Cloud, Some(id), None),
+            Some(Err(e)) => none(e),
+            None => none("the plugin declares no cloud instance".into()),
+        },
+        Mode::Local if local => at(Where::Local, None, None),
+        Mode::Local => none("the plugin declares no local server".into()),
+        Mode::Auto => match (cloud_ok, local) {
+            (Some(Ok(id)), _) => at(Where::Cloud, Some(id), None),
+            (_, true) => at(Where::Local, None, found_unreviewed.then(|| "cloud instance available: review it to run there".to_string())),
+            (Some(Err(e)), false) => none(e),
+            (None, false) => none("the plugin declares no server".into()),
+        },
     }
 }
 
@@ -232,22 +318,19 @@ pub fn data_dir(root: &Path, ctx: &Context, id: &str) -> PathBuf {
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub id: String,
-    /// the plugin folder (cwd of the local server)
-    pub dir: PathBuf,
+    /// the approved snapshot's declaration when approved, else the live one
     pub decl: ServerDecl,
     pub mode: Mode,
-    /// a genuine approval matches the folder as it is (cached check)
-    pub approved: bool,
-    /// the fingerprint a genuine approval names; a start re-hashes the folder
-    /// and must match it
-    pub approval: Option<String>,
+    /// the user's approval (signature and epoch checked), if any
+    pub grant: Option<Grant>,
 }
 
 /// Where a request goes.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Target {
     Local { data_dir: PathBuf },
-    Cloud { url: String, api_base: String },
+    /// `binding`: the approved instance (see `binding()`)
+    Cloud { url: String, api_base: String, binding: String },
 }
 
 impl Target {
@@ -318,7 +401,7 @@ pub struct LocalProc {
     server: Arc<Server>,
     /// its `initialize` result, given to every client that initializes
     init: Value,
-    /// the folder fingerprint it was started from
+    /// the snapshot fingerprint it was started from
     approval: String,
     /// (name, value) of its env: kept out of error text sent to callers
     scrub: Vec<(String, String)>,
@@ -402,17 +485,27 @@ impl Backends {
     /// Placement of every enabled plugin with a server, by id.
     pub fn placements(&self) -> Vec<(String, Placement)> {
         let ctx = self.context();
-        (self.lookup)().into_iter().map(|e| (e.id.clone(), resolve(&e.decl, e.mode, e.approved, &ctx))).collect()
+        (self.lookup)().into_iter().map(|e| (e.id.clone(), resolve(&e.decl, e.mode, e.grant.as_ref(), &ctx))).collect()
+    }
+
+    /// The workspace instance `decl`'s cloud part matches now, as (binding,
+    /// instance id, workspace slug): what approving would bind.
+    pub fn cloud_binding(&self, decl: &ServerDecl) -> Option<(String, String, String)> {
+        let ctx = self.context();
+        let inst = cloud_instance(decl.cloud.as_ref()?, &ctx).ok()?;
+        Some((binding(&ctx, &inst), inst, ctx.slug.clone().unwrap_or_default()))
     }
 
     /// Where `e` goes in `ctx`, or why not.
     fn target_in(&self, e: &Entry, ctx: &Context) -> Result<Target, String> {
-        let p = resolve(&e.decl, e.mode, e.approved, ctx);
+        let p = resolve(&e.decl, e.mode, e.grant.as_ref(), ctx);
         match p.resolved {
             Where::Unavailable => Err(p.reason.unwrap_or_default()),
             Where::Local => Ok(Target::Local { data_dir: data_dir(&self.root, ctx, &e.id) }),
             Where::Cloud => match (&ctx.api_base, &p.instance) {
-                (Some(base), Some(inst)) => Ok(Target::Cloud { url: cloud_url(base, inst), api_base: base.clone() }),
+                (Some(base), Some(inst)) => {
+                    Ok(Target::Cloud { url: cloud_url(base, inst), api_base: base.clone(), binding: binding(ctx, inst) })
+                }
                 _ => Err("not signed in to AgentArea".into()),
             },
         }
@@ -449,15 +542,15 @@ impl Backends {
             self.stop_plugin(id);
             return Err(format!("no enabled plugin {id} with a server"));
         };
-        if !e.approved {
-            // revoked, or the folder changed since it was approved
+        let Some(grant) = &e.grant else {
+            // revoked (or never approved)
             self.stop_plugin(id);
             return Err(NOT_ALLOWED.into());
-        }
+        };
         match pin {
             Some(t @ Target::Local { .. }) if e.decl.local.is_some() => Ok(t.clone()),
-            Some(t @ Target::Cloud { .. }) if e.decl.cloud.is_some() => Ok(t.clone()),
-            Some(_) => Err("the plugin no longer declares the backend this thread started with".into()),
+            Some(t @ Target::Cloud { binding, .. }) if e.decl.cloud.is_some() && grant.instances.contains(binding) => Ok(t.clone()),
+            Some(_) => Err("the backend this thread started with is no longer approved".into()),
             None => self.target_in(&e, &self.context()),
         }
     }
@@ -478,12 +571,13 @@ impl Backends {
     }
 
     /// The plugin's local server for `data_dir`, started (or restarted when it
-    /// died or the folder changed) as needed. A start re-hashes the whole
-    /// plugin folder and needs it to match the approval.
+    /// died or a newer version was approved) as needed. It runs from the
+    /// approved snapshot, which is re-hashed before every start.
     pub fn start(&self, id: &str, data_dir: &Path) -> Result<Arc<LocalProc>, String> {
         let e = self.entry(id).ok_or_else(|| format!("no enabled plugin {id} with a server"))?;
         let decl = e.decl.local.as_ref().ok_or("the plugin declares no local server")?;
-        let approval = e.approval.clone().filter(|_| e.approved).ok_or(NOT_ALLOWED)?;
+        let grant = e.grant.clone().ok_or(NOT_ALLOWED)?;
+        let approval = grant.fingerprint.clone();
         let slot = self.slot(id, data_dir);
         let mut state = slot.lock().map_err(|_| "poisoned")?;
         if let Some(l) = state.proc.as_ref() {
@@ -501,14 +595,10 @@ impl Backends {
         }
         let scrub_env: Vec<(String, String)> = decl.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         let started = (|| {
-            if plugin_trust::fingerprint(id, &e.dir)? != approval {
-                return Err(format!("the plugin folder changed since it was approved; {NOT_ALLOWED}"));
-            }
+            plugin_trust::verify(id, &grant.snapshot, &approval)?;
             std::fs::create_dir_all(data_dir).map_err(|err| format!("data folder: {err}"))?;
-            let mut env = decl.env.clone();
-            env.insert("AGENTAREA_PLUGIN_ID".into(), id.to_string());
-            env.insert("AGENTAREA_DATA_DIR".into(), data_dir.display().to_string());
-            local_mcp::start_stdio(&decl.command[0], &decl.command[1..], &env, &e.dir)
+            let env = child_env(&decl.env, id, data_dir);
+            local_mcp::start_stdio(&decl.command[0], &decl.command[1..], &env, &grant.snapshot)
                 .map_err(|err| format!("local server: {}", scrub(&scrub_env, &err)))
         })();
         let (server, init) = match started {
@@ -519,8 +609,8 @@ impl Backends {
             }
         };
         let server = Arc::new(server);
-        // Revoked while it started: don't keep it.
-        if self.entry(id).and_then(|e| e.approval.filter(|_| e.approved)).as_deref() != Some(approval.as_str()) {
+        // Revoked (or superseded) while it started: don't keep it.
+        if self.entry(id).and_then(|e| e.grant).map(|g| g.fingerprint).as_deref() != Some(approval.as_str()) {
             stop_later(vec![server]);
             return Err(NOT_ALLOWED.into());
         }
@@ -548,7 +638,7 @@ impl Backends {
             let wanted = Target::Local { data_dir: dir.clone() };
             let keep = l.server.is_alive()
                 && entries.iter().find(|e| e.id == id).is_some_and(|e| {
-                    e.approved
+                    e.grant.as_ref().is_some_and(|g| g.fingerprint == l.approval)
                         && e.decl.local.is_some()
                         && (self.target_in(e, &ctx).ok().as_ref() == Some(&wanted) || pins.iter().any(|(p, t)| *p == id && *t == wanted))
                 });
@@ -613,6 +703,30 @@ impl Backends {
         ui.insert(id.to_string(), client.clone());
         Ok(client)
     }
+}
+
+/// The child's environment: the approved `env`, the app's two variables,
+/// and caches pointed into the data folder (the snapshot is read-only, and a
+/// backend must never write next to its code). `NODE_PATH` / user site
+/// packages are off unless the approved env sets them.
+pub fn child_env(env: &BTreeMap<String, String>, id: &str, data_dir: &Path) -> BTreeMap<String, String> {
+    let cache = data_dir.join(".cache");
+    let mut out: BTreeMap<String, String> = [
+        ("XDG_CACHE_HOME", cache.clone()),
+        ("PYTHONPYCACHEPREFIX", cache.join("pycache")),
+        ("UV_CACHE_DIR", cache.join("uv")),
+        ("UV_PROJECT_ENVIRONMENT", data_dir.join(".venv")),
+        ("npm_config_cache", cache.join("npm")),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.display().to_string()))
+    .collect();
+    out.insert("NODE_PATH".into(), String::new());
+    out.insert("PYTHONNOUSERSITE".into(), "1".into());
+    out.extend(env.clone());
+    out.insert("AGENTAREA_PLUGIN_ID".into(), id.to_string());
+    out.insert("AGENTAREA_DATA_DIR".into(), data_dir.display().to_string());
+    out
 }
 
 /// A gateway message for a local server; `None` for notifications and
@@ -732,6 +846,11 @@ mod tests {
 
     const INSTANCE: &str = "6f1c2a3b-0000-4000-8000-000000000001";
 
+    /// Approved, with the acme instance.
+    fn granted() -> Grant {
+        Grant { fingerprint: "f".into(), snapshot: PathBuf::from("/snap"), instances: vec![format!("ru/acme/{INSTANCE}")] }
+    }
+
     fn ctx(instances: Option<&[(&str, &str)]>) -> Context {
         Context {
             env: "ru".into(),
@@ -760,6 +879,49 @@ mod tests {
             assert!(d.validate("x").is_err(), "{bad}");
         }
         assert!(serde_json::from_str::<ServerDecl>(r#"{"local":{"command":"node s.js"}}"#).is_err(), "command is an array");
+    }
+
+    /// NEW-3: no downloaders; arguments stay in the plugin folder.
+    #[test]
+    fn commands_run_only_what_was_reviewed() {
+        let ok = |c: &[&str]| check_command(&c.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert!(ok(&["node", "server.mjs"]).is_ok());
+        assert!(ok(&["/opt/homebrew/bin/node", "dist/server.js", "--port=0"]).is_ok(), "the interpreter may be absolute");
+        assert!(ok(&["python3", "-m", "server"]).is_ok());
+        assert!(ok(&["./bin/server"]).is_ok());
+        for bad in [
+            &["npx", "-y", "some-mcp"][..],
+            &["uvx", "mcp-server"],
+            &["/usr/local/bin/npx", "x"],
+            &["npm", "exec", "x"],
+            &["pnpm", "dlx", "x"],
+            &["bunx", "x"],
+            &["pipx", "run", "x"],
+        ] {
+            assert!(ok(bad).unwrap_err().contains("downloads code"), "{bad:?}");
+        }
+        for bad in [
+            &["node", "../shared/server.mjs"][..],
+            &["node", "/Users/me/proj/server.js"],
+            &["node", "--require=/tmp/x.js", "s.js"],
+            &["node", "--import", "~/x.mjs"],
+            &["python3", "lib/../../x.py"],
+        ] {
+            assert!(ok(bad).unwrap_err().contains("outside the plugin folder"), "{bad:?}");
+        }
+        assert!(risky_env("NODE_OPTIONS") && risky_env("DYLD_INSERT_LIBRARIES") && risky_env("LD_PRELOAD") && risky_env("PYTHONPATH"));
+        assert!(!risky_env("LOG_LEVEL"));
+    }
+
+    #[test]
+    fn child_env_keeps_caches_out_of_the_snapshot() {
+        let env = child_env(&BTreeMap::from([("LOG".to_string(), "1".to_string()), ("AGENTAREA_PLUGIN_ID".to_string(), "spoof".to_string())]), "p", Path::new("/d"));
+        assert_eq!(env["AGENTAREA_PLUGIN_ID"], "p", "the app's variables win");
+        assert_eq!(env["AGENTAREA_DATA_DIR"], "/d");
+        assert_eq!(env["PYTHONPYCACHEPREFIX"], "/d/.cache/pycache");
+        assert_eq!(env["UV_PROJECT_ENVIRONMENT"], "/d/.venv");
+        assert_eq!(env["XDG_CACHE_HOME"], "/d/.cache");
+        assert_eq!((env["NODE_PATH"].as_str(), env["PYTHONNOUSERSITE"].as_str(), env["LOG"].as_str()), ("", "1", "1"));
     }
 
     /// H1: a plugin may only name its own instance, `plugin:<id>`.
@@ -795,39 +957,65 @@ mod tests {
             (Mode::Cloud, false, true, true, Cloud),
             (Mode::Cloud, true, false, true, Unavailable),
         ];
+        let g = granted();
         for (mode, local, cloud, has, want) in cases {
             let c = ctx(Some(if has { &present[..] } else { &absent[..] }));
-            let p = resolve(&decl(local, cloud), mode, true, &c);
+            let p = resolve(&decl(local, cloud), mode, Some(&g), &c);
             assert_eq!(p.resolved, want, "{mode:?} local={local} cloud={cloud} instance={has}: {p:?}");
             assert_eq!(p.mode, mode);
             assert_eq!(p.reason.is_some(), want == Unavailable, "{p:?}");
             assert_eq!(p.instance.as_deref(), (want == Cloud).then_some(INSTANCE));
             // H1: nothing, cloud included, without the user's approval.
-            let p = resolve(&decl(local, cloud), mode, false, &c);
+            let p = resolve(&decl(local, cloud), mode, None, &c);
             assert_eq!(p.resolved, Unavailable, "unapproved {mode:?} local={local} cloud={cloud} instance={has}");
         }
-        let p = resolve(&decl(false, true), Mode::Auto, true, &ctx(Some(&absent)));
+        let p = resolve(&decl(false, true), Mode::Auto, Some(&g), &ctx(Some(&absent)));
         assert_eq!(p.reason.as_deref(), Some("no MCP instance named \"plugin:demo\" in acme"));
-        let p = resolve(&decl(true, false), Mode::Cloud, true, &ctx(Some(&present)));
+        let p = resolve(&decl(true, false), Mode::Cloud, Some(&g), &ctx(Some(&present)));
         assert!(p.reason.unwrap().contains("no cloud instance"));
-        let p = resolve(&decl(false, true), Mode::Cloud, false, &ctx(Some(&present)));
+        let p = resolve(&decl(false, true), Mode::Cloud, None, &ctx(Some(&present)));
         assert_eq!(p.reason.as_deref(), Some(NOT_ALLOWED), "cloud needs the approval too");
+    }
+
+    /// NEW-5: a cloud approval names one instance in one workspace.
+    #[test]
+    fn cloud_approval_is_bound_to_the_instance() {
+        let local_only = Grant { instances: vec![], ..granted() };
+        let other_id = "6f1c2a3b-0000-4000-8000-0000000000ff";
+        // An instance appears that wasn't reviewed: auto stays local and says so.
+        let p = resolve(&decl(true, true), Mode::Auto, Some(&local_only), &ctx(Some(&[(INSTANCE, "plugin:demo")])));
+        assert_eq!(p.resolved, Where::Local);
+        assert_eq!(p.notice.as_deref(), Some("cloud instance available: review it to run there"));
+        let p = resolve(&decl(true, true), Mode::Cloud, Some(&local_only), &ctx(Some(&[(INSTANCE, "plugin:demo")])));
+        assert_eq!(p.resolved, Where::Unavailable);
+        assert!(p.reason.unwrap().contains("haven't reviewed"));
+        // Same name, different instance: not the one approved.
+        let p = resolve(&decl(false, true), Mode::Auto, Some(&granted()), &ctx(Some(&[(other_id, "plugin:demo")])));
+        assert_eq!(p.resolved, Where::Unavailable);
+        // Same instance id, other workspace: not approved there.
+        let elsewhere = Context { slug: Some("beta".into()), ..ctx(Some(&[(INSTANCE, "plugin:demo")])) };
+        assert_eq!(resolve(&decl(false, true), Mode::Cloud, Some(&granted()), &elsewhere).resolved, Where::Unavailable);
+        // The approved one.
+        let p = resolve(&decl(true, true), Mode::Auto, Some(&granted()), &ctx(Some(&[(INSTANCE, "plugin:demo")])));
+        assert_eq!((p.resolved, p.notice), (Where::Cloud, None));
+        assert_eq!(binding(&ctx(None), INSTANCE), format!("ru/acme/{INSTANCE}"));
     }
 
     #[test]
     fn placement_edge_cases() {
         // Signed out: cloud is out, auto falls back to local.
         let out = Context { env: "ru".into(), ..Context::default() };
-        assert_eq!(resolve(&decl(true, true), Mode::Auto, true, &out).resolved, Where::Local);
-        let p = resolve(&decl(false, true), Mode::Auto, true, &out);
+        let g = granted();
+        assert_eq!(resolve(&decl(true, true), Mode::Auto, Some(&g), &out).resolved, Where::Local);
+        let p = resolve(&decl(false, true), Mode::Auto, Some(&g), &out);
         assert_eq!(p.reason.as_deref(), Some("not signed in to AgentArea"));
         let failed = Context { error: Some("couldn't list MCP instances (500)".into()), ..out.clone() };
-        assert_eq!(resolve(&decl(false, true), Mode::Cloud, true, &failed).reason.as_deref(), Some("couldn't list MCP instances (500)"));
+        assert_eq!(resolve(&decl(false, true), Mode::Cloud, Some(&g), &failed).reason.as_deref(), Some("couldn't list MCP instances (500)"));
         // Exact names only; duplicates and odd ids are refused.
-        assert_eq!(resolve(&decl(false, true), Mode::Cloud, true, &ctx(Some(&[(INSTANCE, "Plugin:Demo")]))).resolved, Where::Unavailable);
-        let dup = resolve(&decl(false, true), Mode::Cloud, true, &ctx(Some(&[(INSTANCE, "plugin:demo"), ("bbbb", "plugin:demo")])));
+        assert_eq!(resolve(&decl(false, true), Mode::Cloud, Some(&g), &ctx(Some(&[(INSTANCE, "Plugin:Demo")]))).resolved, Where::Unavailable);
+        let dup = resolve(&decl(false, true), Mode::Cloud, Some(&g), &ctx(Some(&[(INSTANCE, "plugin:demo"), ("bbbb", "plugin:demo")])));
         assert!(dup.reason.unwrap().starts_with("2 MCP instances"));
-        let odd = resolve(&decl(false, true), Mode::Cloud, true, &ctx(Some(&[("../x", "plugin:demo")])));
+        let odd = resolve(&decl(false, true), Mode::Cloud, Some(&g), &ctx(Some(&[("../x", "plugin:demo")])));
         assert_eq!(odd.resolved, Where::Unavailable);
         assert_eq!(cloud_url("https://api.example/", INSTANCE), format!("https://api.example/v1/mcp/{INSTANCE}/mcp"));
     }
@@ -943,21 +1131,16 @@ mod tests {
         let dir = demo_copy(&root);
         let mode = Arc::new(Mutex::new(Mode::Local));
         let approved = Arc::new(AtomicBool::new(true));
-        let approval = plugin_trust::fingerprint("backend-demo", &dir).unwrap();
-        let (m, a, d) = (mode.clone(), approved.clone(), dir.clone());
+        let grant = approve_copy(&root, &dir);
+        let (m, a, snap) = (mode.clone(), approved.clone(), grant.snapshot.clone());
         let backends = Arc::new(Backends::new(
             root.clone(),
             Box::new(move || {
-                // Like plugins::backend_entries: approved = the approval matches the folder now.
-                let ok = a.load(std::sync::atomic::Ordering::SeqCst)
-                    && plugin_trust::fingerprint("backend-demo", &d).ok().as_deref() == Some(approval.as_str());
                 vec![Entry {
                     id: "backend-demo".into(),
-                    dir: d.clone(),
-                    decl: demo_decl(&d),
+                    decl: demo_decl(&snap),
                     mode: *m.lock().unwrap(),
-                    approved: ok,
-                    approval: Some(approval.clone()),
+                    grant: a.load(std::sync::atomic::Ordering::SeqCst).then(|| grant.clone()),
                 }]
             }),
         ));
@@ -1033,45 +1216,60 @@ mod tests {
         std::thread::sleep(Duration::from_millis(1500));
         assert!(!acme_proc.server.is_alive(), "and goes with it");
 
-        // H2: an edit anywhere in the folder revokes: refused at once, process stopped.
-        std::fs::write(dir.join("server.mjs"), std::fs::read_to_string(dir.join("server.mjs")).unwrap() + "\n// edited\n").unwrap();
-        let (status, _, body) = rpc(&url, &token.token, None, &call(10, "echo", json!({"text":"x"})));
+        // NEW-1: the live folder can change at will; what runs is the
+        // approved snapshot, before and after a restart.
+        std::fs::write(dir.join("server.mjs"), "process.exit(3)").unwrap();
+        let (_, _, body) = rpc(&url, &token.token, None, &call(10, "echo", json!({"text":"still the approved code"})));
+        assert_eq!(text(&body), "still the approved code");
+        backends.stop_all();
+        let (_, _, body) = rpc(&url, &token.token, None, &call(11, "echo", json!({"text":"restarted from the snapshot"})));
+        assert_eq!(text(&body), "restarted from the snapshot", "{body}");
+
+        // Revoked: refused at once, processes stopped.
+        approved.store(false, std::sync::atomic::Ordering::SeqCst);
+        let (status, _, body) = rpc(&url, &token.token, None, &call(12, "echo", json!({"text":"x"})));
         assert_eq!(status, 503, "{body}");
         assert!(body.contains("not allowed yet"), "{body}");
         std::thread::sleep(Duration::from_millis(1500));
         assert!(backends.locals.lock().unwrap().values().all(|s| s.lock().unwrap().proc.is_none()), "stopped");
 
         // Placed in the cloud with nothing there: unavailable.
-        approved.store(false, std::sync::atomic::Ordering::SeqCst);
         *mode.lock().unwrap() = Mode::Cloud;
         backends.reconcile();
         assert!(backends.ui_request(&mcp, "backend-demo", "tools/list", json!({})).unwrap_err().contains("unavailable"));
 
         backends.stop_all();
-        let _ = std::fs::remove_dir_all(root);
+        plugin_trust::remove_snapshot(&root);
     }
 
-    /// A start re-hashes the folder: an edit that the cached status hasn't
-    /// seen yet (or an mtime-preserving one) still can't run.
+    /// Approve `dir` as plugins.rs does: snapshot it under `<root>/snaps`.
+    fn approve_copy(root: &Path, dir: &Path) -> Grant {
+        let (snapshot, tree) = plugin_trust::snapshot("backend-demo", dir, &root.join("snaps")).unwrap();
+        Grant { fingerprint: tree.fingerprint, snapshot, instances: vec![] }
+    }
+
+    /// Every start re-hashes the snapshot: a tampered copy doesn't run.
     #[test]
-    fn start_rechecks_the_whole_folder() {
+    fn start_rechecks_the_snapshot() {
         let root = temp("recheck");
         let dir = demo_copy(&root);
-        let approval = plugin_trust::fingerprint("backend-demo", &dir).unwrap();
-        std::fs::write(dir.join("extra.js"), "process.exit(1)").unwrap();
-        let d = dir.clone();
+        let grant = approve_copy(&root, &dir);
+        // Someone with write access to the app's data folder edits the copy.
+        let target = grant.snapshot.join("server.mjs");
+        std::fs::set_permissions(&grant.snapshot, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(&target, std::os::unix::fs::PermissionsExt::from_mode(0o644)).unwrap();
+        std::fs::write(&target, "process.exit(1)").unwrap();
+        let g = grant.clone();
         let backends = Backends::new(
             root.clone(),
-            Box::new(move || {
-                vec![Entry { id: "backend-demo".into(), dir: d.clone(), decl: demo_decl(&d), mode: Mode::Local, approved: true, approval: Some(approval.clone()) }]
-            }),
+            Box::new(move || vec![Entry { id: "backend-demo".into(), decl: demo_decl(&g.snapshot), mode: Mode::Local, grant: Some(g.clone()) }]),
         );
         let err = backends.start("backend-demo", &root.join("data")).err().unwrap();
-        assert!(err.contains("changed since it was approved"), "{err}");
+        assert!(err.contains("approved copy was modified"), "{err}");
         assert!(!root.join("data").exists(), "nothing ran");
         // Backoff: the same error, without another attempt.
         assert_eq!(backends.start("backend-demo", &root.join("data")).err().unwrap(), err);
-        let _ = std::fs::remove_dir_all(root);
+        plugin_trust::remove_snapshot(&root);
     }
 
     /// What the fake platform proxy saw.
@@ -1135,8 +1333,8 @@ mod tests {
         let backends = Arc::new(Backends::new(
             root.clone(),
             Box::new(move || {
-                let ok = a.load(std::sync::atomic::Ordering::SeqCst);
-                vec![Entry { id: "demo".into(), dir: PathBuf::from("/nonexistent"), decl: decl(true, true), mode: Mode::Auto, approved: ok, approval: None }]
+                let grant = a.load(std::sync::atomic::Ordering::SeqCst).then(granted);
+                vec![Entry { id: "demo".into(), decl: decl(true, true), mode: Mode::Auto, grant }]
             }),
         ));
         let with_instance = || Context {
@@ -1189,6 +1387,6 @@ mod tests {
         http("GET", &url, &token.token, Some("up-1"), &json!({}));
         assert!(seen.recv_timeout(Duration::from_secs(5)).unwrap().line.starts_with("GET /v1/mcp/"));
         crate::data_mcp::set_cloud_token(api, None);
-        let _ = std::fs::remove_dir_all(root);
+        plugin_trust::remove_snapshot(&root);
     }
 }

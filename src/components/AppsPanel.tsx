@@ -619,7 +619,7 @@ export function PluginsPanel() {
         <Note title={`${plugin.title} is off`}>Switch it on in the list to open it.</Note>
       ) : plugin ? (
         <>
-          {plugin.server && <BackendBar plugin={plugin} onError={setError} />}
+          {(plugin.server || plugin.serverApproved || plugin.staleApproval) && <BackendBar plugin={plugin} onError={setError} />}
           {plugin.serverError && (
             <div className="border-b border-border px-4 py-2 text-xs text-destructive">Backend not loaded: {plugin.serverError}</div>
           )}
@@ -681,30 +681,36 @@ function BackendBar({ plugin, onError }: { plugin: Plugin; onError: (e: string) 
           </Badge>
         )}
         {status?.reason && <span className="min-w-0 flex-1 truncate text-muted-foreground" title={status.reason}>{status.reason}</span>}
+        {status?.notice && <span className="min-w-0 flex-1 truncate text-foreground" title={status.notice}>{status.notice}</span>}
+        {plugin.updateAvailable && <span className="text-foreground">Update available</span>}
         <span className="ml-auto flex items-center gap-2">
-          {plugin.serverApproved ? (
+          {(!plugin.serverApproved || plugin.updateAvailable || status?.notice) && (
+            <Button size="xs" onClick={() => run(async () => setReview(await reviewPluginServer(plugin.id)))}>
+              {plugin.updateAvailable ? 'Review update…' : plugin.serverApproved ? 'Review…' : 'Review and allow…'}
+            </Button>
+          )}
+          {(plugin.serverApproved || plugin.staleApproval) && (
             <Button size="xs" variant="ghost" onClick={() => run(() => approvePluginServer(plugin.id, false))} title="Stop allowing this backend">
               Revoke
-            </Button>
-          ) : (
-            <Button size="xs" onClick={() => run(async () => setReview(await reviewPluginServer(plugin.id)))}>
-              Review and allow…
             </Button>
           )}
         </span>
       </div>
-      {review && !plugin.serverApproved && (
+      {review && (
         <div className="mt-2 flex flex-col gap-1.5 rounded-lg border border-border bg-muted/40 p-3">
           <p className="text-muted-foreground">
-            Allowing lets this plugin's backend serve its page and your local agents. If any file in its folder changes later,
-            the approval lapses and you are asked again.
+            Allowing runs exactly this version: a read-only copy of the plugin folder as shown here. Later changes to the folder
+            don't run until you review and allow them.
           </p>
           {review.command && (
             <>
               <span className="font-medium">Runs on this device, as you, without a sandbox</span>
               <code className="whitespace-pre-wrap break-all rounded bg-background px-2 py-1">{review.command.join(' ')}</code>
               <span>
-                in <code className="break-all">{review.cwd}</code> ({review.files} files covered)
+                program: <code className="break-all">{review.executable}</code>
+              </span>
+              <span>
+                from a copy of <code className="break-all">{review.cwd}</code> ({review.files} files, {formatBytes(review.bytes)})
               </span>
               {Object.keys(review.env).length > 0 && (
                 <>
@@ -716,27 +722,40 @@ function BackendBar({ plugin, onError }: { plugin: Plugin; onError: (e: string) 
                   </code>
                 </>
               )}
+              {review.warnings.map((w) => (
+                <span key={w} className="text-destructive">
+                  {w}
+                </span>
+              ))}
             </>
           )}
-          {review.cloudInstance && (
-            <span>
-              Uses workspace instance <code>{review.cloudInstance}</code> with your AgentArea sign-in.
-            </span>
-          )}
+          {review.cloud &&
+            (review.cloud.instanceId ? (
+              <span>
+                Uses workspace instance <code>{review.cloud.instance}</code> (id <code>{review.cloud.instanceId}</code> in{' '}
+                {review.cloud.workspace}) with your AgentArea sign-in.
+              </span>
+            ) : (
+              <span className="text-muted-foreground">
+                Declares workspace instance <code>{review.cloud.instance}</code>; none in this workspace now (each one is reviewed
+                when it appears).
+              </span>
+            ))}
           <div className="mt-1 flex gap-2">
             <Button
               size="xs"
+              disabled={review.approved}
               onClick={() =>
                 run(async () => {
                   try {
-                    await approvePluginServer(plugin.id, true, review.fingerprint);
+                    await approvePluginServer(plugin.id, true, review);
                   } finally {
                     setReview(null);
                   }
                 })
               }
             >
-              Allow
+              {review.approved ? 'Already allowed' : 'Allow'}
             </Button>
             <Button size="xs" variant="ghost" onClick={() => setReview(null)}>
               Cancel
@@ -746,6 +765,10 @@ function BackendBar({ plugin, onError }: { plugin: Plugin; onError: (e: string) 
       )}
     </div>
   );
+}
+
+function formatBytes(n: number): string {
+  return n < 1024 ? `${n} B` : n < 1 << 20 ? `${(n / 1024).toFixed(0)} KB` : `${(n / (1 << 20)).toFixed(1)} MB`;
 }
 
 /** Show or hide an enabled plugin's entry in the sidebar. */

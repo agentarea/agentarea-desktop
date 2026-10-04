@@ -344,9 +344,10 @@ async fn run_agent(
 fn start_turn(app: &AppHandle, a: TurnArgs) -> Result<(), String> {
     let session_id = a.session_id.as_str();
     check_id(session_id)?;
-    // The workspace slug and the base go into URLs: keep both plain.
+    // The workspace slug and the base go into URLs: keep both plain (no dots,
+    // so no `..`).
     if let Some(w) = &a.workspace {
-        if w.is_empty() || w.len() > 128 || !w.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
+        if w.is_empty() || w.len() > 128 || !w.chars().all(|c| c.is_ascii_alphanumeric() || "-_".contains(c)) {
             return Err(format!("invalid workspace: {w}"));
         }
     }
@@ -759,6 +760,10 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             app.manage(runners::Runners::new(Arc::new(move |session_id, event| emit_agent(&handle, session_id, event))));
+            // Approved plugin backends run from read-only copies in the app's own data.
+            if let Ok(dir) = app.path().app_data_dir() {
+                plugin_trust::set_snapshot_root(dir.join("plugin-snapshots"));
+            }
             match vault::Vault::user().and_then(secrets_mcp::SecretsMcp::start) {
                 Ok(server) => {
                     app.manage(server);
@@ -872,11 +877,13 @@ mod tests {
         let data_dir = temp("plugin-wiring");
         let entry = plugin_backends::Entry {
             id: "backend-demo".into(),
-            dir: data_dir.clone(),
             decl: serde_json::from_str(r#"{"cloud":{"instance":"plugin:backend-demo"}}"#).unwrap(),
             mode: plugin_backends::Mode::Auto,
-            approved: true,
-            approval: None,
+            grant: Some(plugin_backends::Grant {
+                fingerprint: "f".into(),
+                snapshot: data_dir.clone(),
+                instances: vec!["ru/acme/6f1c2a3b-0000-4000-8000-000000000001".into()],
+            }),
         };
         let backends = Arc::new(plugin_backends::Backends::new(data_dir.clone(), Box::new(move || vec![entry.clone()])));
         backends.set_context(plugin_backends::Context {

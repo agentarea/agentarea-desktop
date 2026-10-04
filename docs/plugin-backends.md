@@ -39,24 +39,37 @@ one must be present:
 }
 ```
 
-- `local.command` is the program followed by its arguments. It runs with the
-  plugin folder as its working directory. A bare name (`node`) is looked up
-  the same way as the agent CLIs (`~/.local/bin`, Homebrew, `/usr/local/bin`,
-  then PATH). A relative path (`./bin/server`) is resolved from the plugin
-  folder.
+- `local.command` is the program followed by its arguments. It runs from
+  the **approved read-only copy** of the plugin folder, which is its working
+  directory (see [Security model](#security-model)).
+  - A bare name (`node`) is looked up the same way as the agent CLIs:
+    `~/.local/bin`, Homebrew, `/usr/local/bin`, then PATH. The review shows
+    the absolute path it resolves to.
+  - A relative path (`./bin/server`) is resolved from the copy.
+  - Arguments must stay inside the plugin folder: no absolute paths, `~`, or
+    `..` (also inside `--flag=value`). The program itself, `command[0]`, may
+    be absolute.
+  - Downloaders are refused: `npx`, `pnpx`, `bunx`, `uvx`, `pipx`, `yarn`,
+    `npm exec`, `pnpm dlx`, `bun x` and `uv tool`. They fetch whatever version
+    is current, which is not what was reviewed. **Vendor dependencies into
+    the plugin folder** instead (for example, a committed `node_modules`).
 - `local.env` is extra environment for the child. Names must be plain
   (`[A-Za-z_][A-Za-z0-9_]*`). Env values are left out of the plugin list. The
   approval review shows them in full, and they are scrubbed from the server
   error text that callers see.
+- The app sets these defaults unless `env` overrides them:
+  - Caches go into the data folder: `XDG_CACHE_HOME`,
+    `PYTHONPYCACHEPREFIX`, `UV_CACHE_DIR`, `npm_config_cache` (all under
+    `<data>/.cache`) and `UV_PROJECT_ENVIRONMENT=<data>/.venv`.
+  - `NODE_PATH=` (empty) and `PYTHONNOUSERSITE=1`.
 - The app always sets two variables, overriding any `env` of the same name:
   - `AGENTAREA_PLUGIN_ID`: the plugin id.
   - `AGENTAREA_DATA_DIR`: `~/AgentArea/workspaces/<env>/<slug>/plugins/<id>/`.
     `<env>` is the environment id (`ru`, `local`) and `<slug>` is the
     workspace. The app creates the folder. With no workspace known, it is
     `~/AgentArea/workspaces/local/default/plugins/<id>/`.
-  - **A backend must keep its data in this folder, not in the plugin folder.**
-    Any write in the plugin folder cancels the approval (see
-    [Security model](#security-model)).
+  - **A backend writes only to this folder.** Its own code folder is a
+    read-only copy, so writes there fail.
 - `cloud.instance` must be exactly **`plugin:<id>`**, the plugin's own id. A
   plugin cannot point at the workspace's other MCP servers.
 - If `server` is invalid (empty command, bad env name, wrong instance name,
@@ -76,12 +89,24 @@ The mode is resolved against the active workspace:
 
 | mode    | resolves to                                                      |
 |---------|------------------------------------------------------------------|
-| `auto`  | cloud if the workspace has `plugin:<id>`, else local if declared, else unavailable |
+| `auto`  | cloud if the workspace's `plugin:<id>` instance is approved, else local if declared, else unavailable |
 | `local` | local if declared, else unavailable                              |
-| `cloud` | cloud if the workspace has `plugin:<id>`, else unavailable       |
+| `cloud` | cloud if the workspace's `plugin:<id>` instance is approved, else unavailable |
 
-Every placement also needs the user's approval. Without it the result is
+Every placement needs the user's approval. Without one the result is
 unavailable, with the reason "not allowed yet".
+
+A cloud approval names the **concrete instance**: its id, in its environment
+and workspace (`<env>/<slug>/<instance id>`).
+
+- Another instance with the same name, the same instance seen from another
+  workspace, or a re-created instance are all unapproved until reviewed.
+- In `auto`, an instance that appears but hasn't been reviewed **never takes
+  over** from an approved local backend. The backend stays local, and the
+  status shows the notice "cloud instance available: review it to run
+  there".
+- In `cloud`, such an instance is unavailable, with a reason that says it
+  needs a review.
 
 - **Cloud match rule.** The workspace's instances
   (`GET /v1/workspaces/{slug}/mcp-server-instances/`) are matched on `name`
@@ -132,9 +157,9 @@ There is one endpoint per plugin, on the vault's existing loopback server
 POST http://127.0.0.1:<port>/plugins/<id>/mcp     (MCP Streamable HTTP)
 ```
 
-- **Local.** The JSON-RPC message goes to the plugin's stdio child, which is
-  started on first use. There is one child per (plugin, data folder), shared
-  by its callers:
+- **Local.** The JSON-RPC message goes to the plugin's stdio child. The child
+  is started on first use from the approved copy. There is one child per
+  (plugin, data folder), shared by its callers:
   - Client request ids are remapped onto the child's own ids, and the client's
     id comes back in the response.
   - A client's `initialize` gets the child's own initialization result. A
@@ -156,7 +181,8 @@ POST http://127.0.0.1:<port>/plugins/<id>/mcp     (MCP Streamable HTTP)
     own OAuth flow.
   - The platform binds the request to the instance's own workspace, so the
     URL needs no workspace segment.
-- **Unavailable.** The gateway answers 503 with the reason.
+- **Unavailable.** The gateway answers 503 with the reason (405 for GET and
+  DELETE).
 - **Sessions.** The gateway remembers which route a caller's `initialize`
   went to. If a later message from that caller would go to another route
   (placement or workspace moved), the gateway answers **404** once. Per MCP,
@@ -165,9 +191,9 @@ POST http://127.0.0.1:<port>/plugins/<id>/mcp     (MCP Streamable HTTP)
 - **Redaction.** Results on an agent's token pass the vault `Redactor`, the
   same as `agentarea_data`:
   - Local replies are redacted whole.
-  - Cloud answers are redacted per SSE event, or as a whole JSON body. A
-    non-SSE body that is too large to hold is cut off rather than passed
-    through unredacted.
+  - Cloud answers are redacted per SSE event (LF or CRLF framing), or as a
+    whole JSON body. A non-SSE body that is too large to hold is cut off
+    rather than passed through unredacted.
 
 The plugin's page uses the same gateway. A bridge call goes to Rust
 (`plugin_backend_tools` / `plugin_backend_call`). Rust acts as an MCP client
@@ -223,85 +249,129 @@ sandboxed, with an opaque origin, so only the app's own UI can invoke them.
 
 ## UI
 
-The Apps → Plugins panel shows a bar above each plugin that has a server:
+The Apps → Plugins panel shows a bar above each plugin that has a server (or
+an approval):
 
 - An Auto / Local / Cloud selector. Local or Cloud is disabled when the
   manifest doesn't declare it.
 - The resolved placement badge ("Runs on this device", "Runs in the
   workspace", "Unavailable"), plus the reason.
-- **Review and allow…** opens the review (`plugin_server_review`). It shows:
+- **Review and allow…** (or **Review update…** when the folder changed, or
+  **Review…** when a cloud instance needs one) opens the review
+  (`plugin_server_review`). It shows:
   - the exact command, wrapped and never truncated;
-  - the working folder;
-  - every env variable with its value;
-  - the workspace instance it uses ("Uses workspace instance
-    `plugin:<id>`");
-  - how many files the approval covers.
+  - the absolute path of the program it resolves to;
+  - the folder that is copied, with its file count and size;
+  - every env variable with its value, plus a warning for `NODE_OPTIONS`,
+    `NODE_PATH`, `PYTHONPATH`, `PYTHONSTARTUP`, `PYTHONHOME`, `LD_*`, `DYLD_*`
+    and similar;
+  - the concrete workspace instance it would use (name, id, workspace), or
+    that none exists in this workspace now.
 
-  **Allow** sends the fingerprint of what was shown. **Revoke** removes the
-  approval.
+  **Allow** sends the fingerprint and instance binding of what was shown.
+- **Revoke** is shown whenever any approval entry exists: current, an older
+  version with an update available, or one that no longer counts.
+- "Update available" appears when the live folder differs from the approved
+  copy. The approved copy keeps running until the update is approved.
 - `serverError` is shown when the manifest's `server` was rejected.
+
+## Threat model
+
+**What the approval is.** The approval is **consent plus integrity**:
+
+- **Consent.** Nothing of a plugin's backend runs, and no cloud instance is
+  called, until the user has seen exactly what it is and said yes.
+- **Integrity.** What runs is exactly what the user saw.
+  - Third-party plugin code can't be swapped or extended afterwards, whether
+    by an update, a downloaded replacement, or code fetched at run time.
+  - Another workspace member can't redirect the plugin to a different cloud
+    endpoint.
+  - An approval the user revoked can't be put back.
+
+**What it is not.** It is **not a sandbox against the user's own agents.**
+Local agent CLIs (Claude Code, Codex) in threads already run shell commands
+as the user, within the limits their own sandbox and the user's per-command
+approvals set. An agent that the user lets run arbitrary commands can do
+anything the user can, with or without plugins.
+
+| protected | not protected |
+|---|---|
+| Running code nobody reviewed: a new plugin, a changed one, `npx`-style downloads | Code the user approved doing harm: it runs as the user, unsandboxed |
+| Swapping files after approval (live folder edits, symlink tricks, edits racing a start) | A process that already runs as the user editing the app's data folder *and* getting Keychain access (see limits) |
+| Pointing the plugin at another workspace instance, or a same-named new one | What the approved cloud instance does with your data (platform governance applies) |
+| Forging, replaying or un-revoking approvals by editing `~/AgentArea` | Prompt injection through tool results (results to agents are redacted for vault secrets, not filtered) |
+| Hidden or unreviewed command, interpreter, env (all shown; risky env flagged) | Code reached through Node's parent-folder module lookup above the copy (e.g. `~/node_modules`) |
+
+**Sandboxing** local backends and agent CLIs alike (for example
+`sandbox-exec` with writes limited to the data folder) is **future work**.
 
 ## Security model
 
-- **One approval covers both places.** A local server runs unsandboxed, as
-  the user, with the plugin folder as its working directory. A cloud
-  placement calls the workspace's `plugin:<id>` instance with the user's
-  token. The app does neither until the user allows the plugin's backend.
-- **What is approved: the whole folder.** `plugin_trust.rs` computes a
-  SHA-256 over:
-  - the plugin id;
-  - the folder path;
-  - every file in the folder, in sorted order: each file's path and content
-    hash, and each symlink's target;
-  - and so `plugin.json`, which holds the command, env and instance.
-
-  Any change to a file cancels the approval: an edit, a new file, a deleted
-  file. That includes an agent rewriting `server.mjs` or `node_modules`.
-  - **Exclusions:** `.DS_Store` files anywhere, and a top-level `.git/`
-    folder. Nothing else is excluded. Data belongs in `AGENTAREA_DATA_DIR`,
-    outside the folder.
-  - **Unverifiable folders can't be approved:** a symlink that leads out of
-    the folder, more than 20 000 files, or more than 256 MiB.
-- **When it is checked.**
-  - Status and routing compare against a cached fingerprint. It is re-hashed
-    when any file's size or mtime changes, at most every 2 s.
-  - Every local server start re-hashes the whole folder, so an edit that
-    keeps the mtime still can't run.
-  - A route that finds the approval no longer matching stops the plugin's
-    running processes.
-  - A revoke that lands while a server is starting stops that server
-    before it is used.
-- **What you see is what you approve.** The review returns the fingerprint of
-  exactly what it showed, and Allow sends that fingerprint back. Rust
-  re-hashes and refuses ("changed since it was shown") if they differ. This
-  closes the window between display and click.
-- **Approvals can't be forged.** `serverApprovals` in plugins-state.json
-  holds `{fingerprint, mac}`. The `mac` is HMAC-SHA256 over the id and
-  fingerprint, with a 32-byte key that lives only in the macOS Keychain:
-  - The key is one item: service "AgentArea Desktop Secrets", account
-    `plugin-approvals.key.v1`.
-  - It is created on first approval, read once per launch and cached. A
-    failed or denied read is not cached, and in that case no approval counts.
-  - A same-user process that can write `~/AgentArea` can delete approvals but
-    cannot make one. Entries in any other shape (older builds, hand edits)
-    are ignored.
+- **One approval covers the plugin.** It covers the local server's code
+  (via the copy) and each cloud instance the user reviewed.
+- **Snapshot execution.** Approving copies the plugin folder into the app's
+  own data, `~/Library/Application Support/com.jamakase.agentarea-desktop/plugin-snapshots/<id>/<fingerprint>/`.
+  - It hashes the **copy** and refuses to store anything that doesn't match
+    what was shown.
+  - It makes the copy read-only.
+  - The backend always runs from that copy (cwd = copy), and every start
+    re-hashes the copy.
+  - The live folder can change freely: the change shows as "update
+    available" and runs only after review. This closes the check-then-run
+    race and lazy imports of changed files. It also stops caches written by
+    the server from revoking it, because they go to the data folder.
+- **Fingerprint.** SHA-256 over the plugin id and every file's path,
+  executable bit and content hash (sorted). It is workspace-independent and
+  identical for the live folder and its copy.
+  - **Symlinks** are followed by content when they stay inside the folder: a
+    link to a file is copied as that file's content, and a link to a folder
+    is walked. A link that leads outside the folder, or a cycle, is refused.
+  - **Skipped entries:** `.DS_Store` and a top-level `.git/`. These are
+    skipped *as entries* only. A link pointing into them still brings its
+    target's content into the copy and the hash, so nothing can ride along
+    unhashed.
+  - **Limits:** 100 000 files and 512 MiB, enough for a typical Node plugin
+    with a committed `node_modules`. The review shows file count and size.
+- **What you see is what you approve.** The review returns the fingerprint
+  and the cloud instance binding of exactly what it showed, and Allow sends
+  both back. Rust refuses if the copy's hash or the current instance
+  differs.
+- **Approvals can't be forged or replayed.** `serverApprovals[id]` in
+  plugins-state.json holds
+  `{plugin, fingerprint, instances, issued_at, nonce, epoch, mac}`.
+  - `mac` is HMAC-SHA256 over the other fields, with a key that lives only in
+    one macOS Keychain item: service "AgentArea Desktop Secrets", account
+    `plugin-approvals.key.v1`. The item is JSON:
+    `{key, epochs: {plugin: n}}`.
+  - Every approve and revoke bumps the plugin's epoch in that item, and an
+    approval counts only at the current epoch. So a copy of an older or
+    revoked approval put back into the file does not count.
+  - The item is read once per launch and cached. A failed or denied read is
+    not cached, and then nothing is approved.
+  - Revoke also deletes the copies.
 - **Gateway:** loopback only, a per-caller and per-plugin bearer token, and a
   local `Origin` only. A browser page can't reach a plugin without a token.
-- **Cloud:** the user's own token, with governance applied by the platform
-  proxy (workspace binding, policy, audit). The gateway only adds the token
-  and filters headers.
+- **Cloud:** the user's own token, sent only to an approved instance, with
+  governance applied by the platform proxy (workspace binding, policy,
+  audit).
 - **The plugin page** stays in its opaque-origin sandbox with `connect-src
-  'none'`. It reaches its backend only through the bridge.
+  'none'`, and reaches its backend only through the bridge. It is served
+  from the live folder, not the copy; it is static web content without host
+  access.
 - **Known limits:**
-  - An approved local backend is still unsandboxed. It can read any file the
-    user can read, including other threads' 0600 `mcp.json` files, which
-    hold bearer tokens. Running it under `sandbox-exec`, with writes limited
-    to `AGENTAREA_DATA_DIR`, is future work.
+  - An approved local backend is unsandboxed. It runs as the user, can read
+    other threads' 0600 `mcp.json` files (bearer tokens), and could ask the
+    Keychain for the approval key: macOS prompts, and "Always Allow" would
+    let it sign approvals. Sandboxing is the fix (future work).
+  - Node resolves bare imports by walking up from the copy, so
+    `~/node_modules` is still reachable. Vendor every dependency.
   - Agent tool calls to `plugin_<id>` are auto-approved, like
-    `agentarea_data`. The folder approval is the consent.
+    `agentarea_data`. The approval is the consent.
   - The plugin page's own results are not redacted. Only agent tokens carry
     a redactor.
   - Child JSON-RPC error codes are flattened to -32603. The message is kept.
+  - Old copies are deleted on the next approve or revoke. If the app quits in
+    between, an unused copy may linger.
 
 ## Phase 2: Channels as its own server
 
@@ -330,8 +400,8 @@ needs:
   tokens.
 - **Long calls.** The gateway forwards with a 60 s request timeout, and
   long-running tools need progress or async results.
-- **Data and approval.** `state.db` must live in `AGENTAREA_DATA_DIR`. A
-  database inside the plugin folder would cancel the approval on every write.
+- **Data.** `state.db` must live in `AGENTAREA_DATA_DIR`. The code runs from
+  a read-only copy, so it can't write next to itself.
 
 ## Phase 3: "Run in cloud"
 
@@ -349,10 +419,9 @@ The aim is to deploy a plugin's server as a workspace MCP instance, so that
   means `state.db`.
 - **Secrets:** `local.env` values that are secrets move to the platform
   secret store and are injected by the proxy, never baked into the package.
-- **Lifecycle:** update or rollback when `plugin.json` changes. Today a
-  hand-made instance named `plugin:<id>` would be picked up once the user
-  approves the plugin. A platform-side marker, such as a `plugin_id` in
-  instance metadata or a hash of the deployed package, would tie the instance
-  to the reviewed folder.
+- **Lifecycle:** update or rollback when `plugin.json` changes. Cloud
+  approvals already bind the concrete instance id. A platform-side marker,
+  such as a hash of the deployed package in instance metadata, would also tie
+  *what the instance runs* to the reviewed folder.
 - **Desktop:** a "Run in cloud" action that creates the instance and then
   re-syncs the context (the Refresh in Plugins already does this).

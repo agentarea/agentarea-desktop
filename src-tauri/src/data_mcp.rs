@@ -285,6 +285,11 @@ fn scoped(cloud: &CloudAccess, path: &str) -> String {
 }
 
 async fn get(cloud: &CloudAccess, path: &str) -> Result<reqwest::Response, String> {
+    // Unscoped, the API would answer for the user's default workspace, not the
+    // one the UI shows.
+    if cloud.workspace.is_none() {
+        return Err("the AgentArea workspace isn't loaded yet; try again in a moment".into());
+    }
     let client = reqwest::Client::builder().timeout(HTTP_TIMEOUT).build().map_err(|e| e.to_string())?;
     client
         .get(format!("{}{}", cloud.api_base.trim_end_matches('/'), scoped(cloud, path)))
@@ -522,7 +527,10 @@ mod tests {
         let c = |w: Option<&str>| CloudAccess { api_base: "x".into(), token: "t".into(), workspace: w.map(String::from) };
         assert_eq!(scoped(&c(Some("acme")), "/v1/files"), "/v1/workspaces/acme/files");
         assert_eq!(scoped(&c(Some("acme")), "/v1/files/download/a%20b.md"), "/v1/workspaces/acme/files/download/a%20b.md");
-        assert_eq!(scoped(&c(None), "/v1/files"), "/v1/files", "no workspace: the user's default");
+        assert_eq!(scoped(&c(None), "/v1/files"), "/v1/files");
+        // Unscoped would read the user's default workspace: refuse instead.
+        let err = tauri::async_runtime::block_on(get(&c(None), "/v1/files")).err().unwrap();
+        assert!(err.contains("isn't loaded yet"), "{err}");
     }
 
     #[test]

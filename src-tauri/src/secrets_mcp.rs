@@ -605,17 +605,21 @@ fn plugin_gateway(inner: &Inner, req: &HttpRequest, w: &mut impl Write, close: b
         return Err(Some((401, "missing or unknown bearer token".into())));
     };
     let redact = |text: String| caller.redactor.as_ref().map(|r| r.redact(&text)).unwrap_or(text);
-    let target = inner
-        .backends
-        .target(id, caller.pin.as_ref().map(|p| &p.target))
-        .map_err(|reason| Some((503, redact(format!("{id} backend unavailable: {reason}")))))?;
+    let target = inner.backends.target(id, caller.pin.as_ref().map(|p| &p.target)).map_err(|reason| {
+        // Only a cloud route has a GET stream or a session to DELETE.
+        if req.method != "POST" {
+            Some((405, "method not allowed".to_string()))
+        } else {
+            Some((503, redact(format!("{id} backend unavailable: {reason}"))))
+        }
+    })?;
     let msg = (req.method == "POST").then(|| serde_json::from_slice::<Value>(&req.body).ok()).flatten();
     let initializing = msg.as_ref().is_some_and(|m| m["method"] == "initialize");
     if !caller.session_ok(&target.key(), initializing) {
         return Err(Some((404, "the backend moved (placement or workspace changed); initialize a new session".into())));
     }
     match target {
-        Target::Cloud { url, api_base } => {
+        Target::Cloud { url, api_base, .. } => {
             let token = data_mcp::current_token(&api_base).ok_or(Some((401, "not signed in to AgentArea".to_string())))?;
             forward(&url, query, &token, req, w, close, caller.redactor.as_ref())
         }
@@ -721,8 +725,11 @@ fn forward(
                 continue;
             };
             held.extend_from_slice(&chunk);
-            if let Some(end) = held.windows(2).rposition(|p| p == b"\n\n") {
-                let rest = held.split_off(end + 2);
+            // SSE events end with a blank line: "\n\n" or "\r\n\r\n".
+            let lf = held.windows(2).rposition(|p| p == b"\n\n").map(|i| i + 2);
+            let crlf = held.windows(4).rposition(|p| p == b"\r\n\r\n").map(|i| i + 4);
+            if let Some(end) = lf.max(crlf) {
+                let rest = held.split_off(end);
                 send(w, r.redact(&String::from_utf8_lossy(&held)).as_bytes())?;
                 held = rest;
             } else if held.len() > MAX_REQUEST_BODY {

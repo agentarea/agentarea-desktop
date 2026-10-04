@@ -28,15 +28,30 @@ export interface PluginServer {
 /** What the user approves (`plugin_server_review`): exactly what runs, where, with what. */
 export interface ServerReview {
   command: string[] | null;
+  /** where the program resolves on this machine */
+  executable: string | null;
+  /** the plugin folder reviewed */
   cwd: string;
+  /** the read-only copy it runs from once approved */
+  runsFrom: string;
   /** the local server's extra environment, values included */
   env: Record<string, string>;
-  cloudInstance: string | null;
-  /** files the fingerprint covers */
+  warnings: string[];
+  cloud: {
+    instance: string;
+    instanceId: string | null;
+    workspace: string | null;
+    /** what approving binds; passed back to approve */
+    binding: string | null;
+    approved: boolean;
+  } | null;
   files: number;
+  bytes: number;
   /** SHA-256 over the plugin folder as reviewed; passed back to approve */
   fingerprint: string;
+  /** this exact version (and cloud instance, if any) is approved */
   approved: boolean;
+  hasApproval: boolean;
 }
 
 /** A backend's placement in the active workspace. */
@@ -47,6 +62,8 @@ export interface BackendStatus {
   reason?: string;
   /** the matched cloud instance id */
   instance?: string;
+  /** something to review, e.g. a cloud instance that appeared */
+  notice?: string;
 }
 
 export interface Plugin {
@@ -76,8 +93,12 @@ export interface Plugin {
   serverError: string | null;
   /** placement the user picked; null without a server */
   placement: PlacementMode | null;
-  /** the user approved the plugin folder as it is now */
+  /** a version of the backend is approved (it runs from its read-only copy) */
   serverApproved: boolean;
+  /** the folder changed since: review again to switch versions */
+  updateAvailable: boolean;
+  /** an approval entry that no longer counts (Revoke clears it) */
+  staleApproval: boolean;
 }
 
 /**
@@ -157,8 +178,13 @@ export function reviewPluginServer(id: string): Promise<ServerReview> {
  * Allow the backend exactly as reviewed (`fingerprint` from the review; Rust
  * refuses if the folder changed since), or revoke.
  */
-export async function approvePluginServer(id: string, approve: boolean, fingerprint?: string): Promise<void> {
-  await invoke('plugin_approve_server', { id, approve, fingerprint: fingerprint ?? null });
+export async function approvePluginServer(id: string, approve: boolean, review?: ServerReview): Promise<void> {
+  await invoke('plugin_approve_server', {
+    id,
+    approve,
+    fingerprint: review?.fingerprint ?? null,
+    binding: review?.cloud?.binding ?? null,
+  });
   await usePlugins.getState().reload();
   void usePlugins.getState().reloadBackends();
 }

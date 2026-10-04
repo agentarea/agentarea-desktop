@@ -158,8 +158,9 @@ which is which, and a local agent can see both.
 - **Plugin backends.** A plugin can declare an MCP server in `plugin.json`
   (`"server": {"local": {...}, "cloud": {"instance": "plugin:<id>"}}`). It runs
   locally (a stdio child) or as the workspace's MCP instance `plugin:<id>`,
-  only after the user reviews and allows the plugin folder (any later file
-  change asks again), and is reachable at one local URL either way:
+  only after the user reviews and allows it. The approved version runs from
+  a read-only copy, and later folder changes wait for another review. It is
+  reachable at one local URL either way:
   `/plugins/<id>/mcp` on the loopback server. Local agents get it as
   `plugin_<id>`; the plugin's page uses `plugin.tools()` / `plugin.call()`.
   Design: [docs/plugin-backends.md](docs/plugin-backends.md); example:
