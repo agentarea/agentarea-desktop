@@ -148,10 +148,23 @@ fn hash(id: &str, files: &[File]) -> Result<Tree, String> {
     for f in files {
         field(f.rel.as_bytes());
         field(&[f.exec as u8]);
-        let bytes = std::fs::read(&f.src).map_err(|e| format!("{}: {e}", f.rel))?;
-        field(digest::digest(&digest::SHA256, &bytes).as_ref());
+        field(file_digest(&f.src).map_err(|e| format!("{}: {e}", f.rel))?.as_ref());
     }
     Ok(Tree { fingerprint: hex(ctx.finish().as_ref()), files: files.len(), bytes: files.iter().map(|f| f.len).sum() })
+}
+
+/// SHA-256 of a file, read in chunks (a big file isn't held in memory).
+fn file_digest(path: &Path) -> std::io::Result<digest::Digest> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut ctx = digest::Context::new(&digest::SHA256);
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        match file.read(&mut buf)? {
+            0 => return Ok(ctx.finish()),
+            n => ctx.update(&buf[..n]),
+        }
+    }
 }
 
 /// The tree of `dir` as it is now, every file read.
@@ -231,7 +244,7 @@ fn set_mode(_: &Path, _: u32) -> std::io::Result<()> {
 
 /// Folders writable again (to replace or remove a snapshot).
 fn make_writable(dir: &Path) {
-    let _ = set_mode(dir, 0o755);
+    let _ = set_mode(dir, 0o700);
     if let Ok(entries) = std::fs::read_dir(dir) {
         for e in entries.flatten() {
             if e.path().is_dir() && !e.path().symlink_metadata().is_ok_and(|m| m.file_type().is_symlink()) {
@@ -259,7 +272,8 @@ pub fn snapshot(id: &str, live: &Path, root: &Path) -> Result<(PathBuf, Tree), S
             let to = tmp.join(&f.rel);
             std::fs::create_dir_all(to.parent().unwrap_or(&tmp)).map_err(|e| format!("snapshot: {e}"))?;
             std::fs::copy(&f.src, &to).map_err(|e| format!("snapshot {}: {e}", f.rel))?;
-            set_mode(&to, if f.exec { 0o555 } else { 0o444 }).map_err(|e| e.to_string())?;
+            // Owner-only: a 0600 secret in the plugin stays private in the copy.
+            set_mode(&to, if f.exec { 0o500 } else { 0o400 }).map_err(|e| e.to_string())?;
         }
         std::fs::create_dir_all(&tmp).map_err(|e| e.to_string())?;
         tree(id, &tmp)
@@ -293,7 +307,7 @@ fn seal(dir: &Path) {
             }
         }
     }
-    let _ = set_mode(dir, 0o555);
+    let _ = set_mode(dir, 0o500);
 }
 
 /// The snapshot still is what was approved.
@@ -324,6 +338,19 @@ struct Secret {
 
 static SECRET: Mutex<Option<Secret>> = Mutex::new(None);
 
+/// When a Keychain read last failed (denied, cancelled): until the user acts
+/// again in Apps → Plugins (`retry_keychain`), or `READ_BACKOFF` passes, the
+/// gateway doesn't ask again: no approval counts meanwhile.
+static READ_FAILED: Mutex<Option<(Instant, String)>> = Mutex::new(None);
+const READ_BACKOFF: Duration = Duration::from_secs(300);
+
+/// The user is in the plugin UI: a failed Keychain read may be retried.
+pub fn retry_keychain() {
+    if let Ok(mut f) = READ_FAILED.lock() {
+        *f = None;
+    }
+}
+
 #[cfg(not(test))]
 fn read_item() -> Result<Option<String>, String> {
     match keyring::Entry::new(KEY_SERVICE, KEY_ACCOUNT).map_err(|e| format!("keychain: {e}"))?.get_password() {
@@ -341,9 +368,12 @@ fn write_item(value: &str) -> Result<(), String> {
         .map_err(|e| format!("keychain: {e}"))
 }
 
-/// Tests never touch the Keychain: one in-memory item.
+/// Tests never touch the Keychain: one in-memory item, and writes that touch
+/// a plugin id in `TEST_FAIL_WRITES` fail.
 #[cfg(test)]
-static TEST_ITEM: Mutex<Option<String>> = Mutex::new(None);
+pub(crate) static TEST_ITEM: Mutex<Option<String>> = Mutex::new(None);
+#[cfg(test)]
+pub(crate) static TEST_FAIL_WRITES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 #[cfg(test)]
 fn read_item() -> Result<Option<String>, String> {
@@ -353,30 +383,64 @@ fn read_item() -> Result<Option<String>, String> {
 
 #[cfg(test)]
 fn write_item(value: &str) -> Result<(), String> {
+    let failing = TEST_FAIL_WRITES.lock().unwrap().clone();
+    let epoch_of = |v: Option<&str>, id: &str| v.and_then(|v| serde_json::from_str::<Secret>(v).ok()).and_then(|s| s.epochs.get(id).copied());
+    let stored = TEST_ITEM.lock().unwrap().clone();
+    if failing.iter().any(|id| epoch_of(Some(value), id) != epoch_of(stored.as_deref(), id)) {
+        return Err("keychain: test write failure".into());
+    }
     *TEST_ITEM.lock().unwrap() = Some(value.to_string());
     Ok(())
 }
 
-/// Run `f` on the Keychain item (read once per launch, created when missing);
-/// with `save`, the changed item is written before the cache is updated.
+fn parse_item(v: &str) -> Result<Secret, String> {
+    // An item from an earlier build held just the hex key.
+    if v.len() == 64 && unhex(v).is_some() {
+        return Ok(Secret { key: v.to_string(), epochs: BTreeMap::new() });
+    }
+    serde_json::from_str::<Secret>(v).map_err(|_| "keychain: bad plugin approval item".to_string())
+}
+
+/// Run `f` on the Keychain item (read once per launch, created when missing).
+/// With `save`, the item is re-read right before the write and epochs are
+/// merged (highest wins), so another app instance's revoke can't be rolled
+/// back by a stale cache; the cache is updated only after the write worked.
 fn with_secret<T>(save: bool, f: impl FnOnce(&mut Secret) -> T) -> Result<T, String> {
     let mut cached = SECRET.lock().map_err(|_| "approval key lock poisoned")?;
     if cached.is_none() {
-        let loaded = match read_item()? {
-            // An item from an earlier build held just the hex key.
-            Some(v) if v.len() == 64 && unhex(&v).is_some() => Secret { key: v, epochs: BTreeMap::new() },
-            Some(v) => serde_json::from_str::<Secret>(&v).map_err(|_| "keychain: bad plugin approval item".to_string())?,
-            None => {
+        if let Some((at, err)) = READ_FAILED.lock().ok().and_then(|f| f.clone()) {
+            if at.elapsed() < READ_BACKOFF {
+                return Err(err);
+            }
+        }
+        let loaded = match read_item() {
+            Ok(Some(v)) => parse_item(&v)?,
+            Ok(None) => {
                 let mut k = vec![0u8; 32];
                 ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut k).map_err(|_| "no randomness")?;
                 let s = Secret { key: hex(&k), epochs: BTreeMap::new() };
                 write_item(&serde_json::to_string(&s).map_err(|e| e.to_string())?)?;
                 s
             }
+            Err(e) => {
+                if let Ok(mut f) = READ_FAILED.lock() {
+                    *f = Some((Instant::now(), e.clone()));
+                }
+                return Err(e);
+            }
         };
         *cached = Some(loaded);
     }
     let mut next = cached.clone().ok_or("no approval key")?;
+    if save {
+        if let Some(stored) = read_item()?.map(|v| parse_item(&v)).transpose()? {
+            next.key = stored.key;
+            for (id, n) in stored.epochs {
+                let e = next.epochs.entry(id).or_insert(0);
+                *e = (*e).max(n);
+            }
+        }
+    }
     let out = f(&mut next);
     if save {
         write_item(&serde_json::to_string(&next).map_err(|e| e.to_string())?)?;
@@ -506,6 +570,12 @@ mod tests {
         assert_eq!(std::fs::read_to_string(snap.join("linked.mjs")).unwrap(), "real()");
         assert!(!snap.join(".git").exists());
         assert!(std::fs::write(snap.join("server.mjs"), "x").is_err(), "read-only");
+        // R2-2: owner-only modes, never readable by others.
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&snap.join("server.mjs")), 0o400);
+        assert_eq!(mode(&snap.join("lib")), 0o500);
+        assert_eq!(mode(&snap), 0o500);
         assert!(std::fs::write(snap.join("new.txt"), "x").is_err(), "no new files either");
 
         std::fs::write(dir.join("server.mjs"), "changed").unwrap();
@@ -539,5 +609,34 @@ mod tests {
         let e = epoch("epoch-test").unwrap();
         assert_eq!(bump("epoch-test").unwrap(), e + 1);
         assert_eq!(epoch("epoch-test").unwrap(), e + 1);
+    }
+
+    /// R2-3: another app instance raised an epoch (a revoke) after this one
+    /// cached the item; this instance's next write keeps it.
+    #[test]
+    fn writes_merge_epochs_from_other_instances() {
+        bump("merge-a").unwrap();
+        bump("merge-b").unwrap();
+        // The other instance: revokes merge-a twice, straight into the item.
+        {
+            let mut item = TEST_ITEM.lock().unwrap();
+            let mut s: Secret = serde_json::from_str(item.as_ref().unwrap()).unwrap();
+            *s.epochs.get_mut("merge-a").unwrap() += 2;
+            *item = Some(serde_json::to_string(&s).unwrap());
+        }
+        let before = epoch("merge-a").unwrap(); // stale cache
+        bump("merge-b").unwrap();
+        let stored: Secret = serde_json::from_str(TEST_ITEM.lock().unwrap().as_ref().unwrap()).unwrap();
+        assert_eq!(stored.epochs["merge-a"], before + 2, "not rolled back");
+        assert_eq!(epoch("merge-a").unwrap(), before + 2, "cache caught up");
+    }
+
+    #[test]
+    fn streams_large_files() {
+        let dir = temp();
+        std::fs::write(dir.join("big.bin"), vec![7u8; 3 * 64 * 1024 + 5]).unwrap();
+        let whole = digest::digest(&digest::SHA256, &std::fs::read(dir.join("big.bin")).unwrap());
+        assert_eq!(file_digest(&dir.join("big.bin")).unwrap().as_ref(), whole.as_ref());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

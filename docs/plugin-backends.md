@@ -47,21 +47,43 @@ one must be present:
     the absolute path it resolves to.
   - A relative path (`./bin/server`) is resolved from the copy.
   - Arguments must stay inside the plugin folder: no absolute paths, `~`, or
-    `..` (also inside `--flag=value`). The program itself, `command[0]`, may
-    be absolute.
-  - Downloaders are refused: `npx`, `pnpx`, `bunx`, `uvx`, `pipx`, `yarn`,
-    `npm exec`, `pnpm dlx`, `bun x` and `uv tool`. They fetch whatever version
-    is current, which is not what was reviewed. **Vendor dependencies into
-    the plugin folder** instead (for example, a committed `node_modules`).
+    `..` (also inside `--flag=value`). A relative program path is held to the
+    same rule. Only an absolute program path, the interpreter itself, may
+    point elsewhere.
+  - **Nothing may fetch code at run time.** Such code would be whatever
+    version is current, not what was reviewed. **Vendor dependencies into
+    the plugin folder** (for example, a committed `node_modules`). Refused,
+    each with a reason:
+    - downloaders: `npx`, `pnpx`, `bunx`, `uvx`, `pipx`, `yarn`, `npm exec`,
+      `pnpm dlx`, `bun x`, `uv tool`;
+    - remote specifiers in arguments: `npm:`, `jsr:`, `http:`, `https:`
+      (also as `--flag=https:…`), and Node network imports;
+    - `uv run` with `--with`, `--with-requirements`, `--with-editable`,
+      `--script` or `--isolated`;
+    - `uv run` without a committed `uv.lock`;
+    - a script with inline dependencies (`# /// script`) without its own
+      `<file>.lock`;
+    - `bun` without `--no-install`;
+    - `deno` without `--no-remote` and `--no-npm`.
+
+    The `uv.lock` rules need the folder. The review reports them (Allow is
+    disabled with the reason), approve refuses them, and every start checks
+    them again against the copy.
 - `local.env` is extra environment for the child. Names must be plain
   (`[A-Za-z_][A-Za-z0-9_]*`). Env values are left out of the plugin list. The
   approval review shows them in full, and they are scrubbed from the server
   error text that callers see.
-- The app sets these defaults unless `env` overrides them:
-  - Caches go into the data folder: `XDG_CACHE_HOME`,
-    `PYTHONPYCACHEPREFIX`, `UV_CACHE_DIR`, `npm_config_cache` (all under
-    `<data>/.cache`) and `UV_PROJECT_ENVIRONMENT=<data>/.venv`.
-  - `NODE_PATH=` (empty) and `PYTHONNOUSERSITE=1`.
+- The app **forces** these after the plugin's `env`, so the plugin can't
+  override them:
+  - **Offline package tools:** `UV_OFFLINE=1`, `PIP_NO_INDEX=1`,
+    `npm_config_offline=true`, `BUN_CONFIG_NO_INSTALL=1`, `DENO_NO_REMOTE=1`.
+  - **`uv run` exception:** `uv run` is not offline. With `UV_FROZEN=1` it
+    installs exactly the hash-pinned packages of the reviewed `uv.lock`, into
+    an app-owned venv next to the copy (`<fingerprint>.venv`).
+  - **Caches** go to the data folder: `XDG_CACHE_HOME`, `UV_CACHE_DIR` and
+    `npm_config_cache` under `<data>/.cache`.
+  - `PYTHONDONTWRITEBYTECODE=1`, `PYTHONNOUSERSITE=1`, and `NODE_PATH=`
+    (empty).
 - The app always sets two variables, overriding any `env` of the same name:
   - `AGENTAREA_PLUGIN_ID`: the plugin id.
   - `AGENTAREA_DATA_DIR`: `~/AgentArea/workspaces/<env>/<slug>/plugins/<id>/`.
@@ -296,11 +318,12 @@ anything the user can, with or without plugins.
 
 | protected | not protected |
 |---|---|
-| Running code nobody reviewed: a new plugin, a changed one, `npx`-style downloads | Code the user approved doing harm: it runs as the user, unsandboxed |
+| Running code nobody reviewed: a new plugin, a changed one, or code fetched at run time. Downloaders, remote specifiers, `uv run --with`/`--script`, unlocked `uv run`, `bun` without `--no-install` and `deno` without `--no-remote --no-npm` are all refused, and package tools run offline. `uv run` installs only the reviewed, hash-pinned `uv.lock`. | Code the user approved doing harm: it runs as the user, unsandboxed, and may itself open network connections or download and run code (only the *launchers* are held offline) |
 | Swapping files after approval (live folder edits, symlink tricks, edits racing a start) | A process that already runs as the user editing the app's data folder *and* getting Keychain access (see limits) |
 | Pointing the plugin at another workspace instance, or a same-named new one | What the approved cloud instance does with your data (platform governance applies) |
 | Forging, replaying or un-revoking approvals by editing `~/AgentArea` | Prompt injection through tool results (results to agents are redacted for vault secrets, not filtered) |
-| Hidden or unreviewed command, interpreter, env (all shown; risky env flagged) | Code reached through Node's parent-folder module lookup above the copy (e.g. `~/node_modules`) |
+| Hidden or unreviewed command, interpreter, env (all shown; risky env flagged) | Code reached through Node's parent-folder module lookup above the copy (e.g. `~/node_modules`), or loaded from caches under the data folder, which the approved code or the user's agents could write |
+| Reverting a revoke by putting an old approval back, including from a second app instance with a stale cache | Revoking while the Keychain can't be written: it is revoked locally and the error is shown, but the counter isn't raised |
 
 **Sandboxing** local backends and agent CLIs alike (for example
 `sandbox-exec` with writes limited to the data folder) is **future work**.
@@ -313,7 +336,8 @@ anything the user can, with or without plugins.
   own data, `~/Library/Application Support/com.jamakase.agentarea-desktop/plugin-snapshots/<id>/<fingerprint>/`.
   - It hashes the **copy** and refuses to store anything that doesn't match
     what was shown.
-  - It makes the copy read-only.
+  - It makes the copy read-only and owner-only: files `0400` (`0500` if
+    executable), folders `0500`. A private file in the plugin stays private.
   - The backend always runs from that copy (cwd = copy), and every start
     re-hashes the copy.
   - The live folder can change freely: the change shows as "update
@@ -346,9 +370,19 @@ anything the user can, with or without plugins.
   - Every approve and revoke bumps the plugin's epoch in that item, and an
     approval counts only at the current epoch. So a copy of an older or
     revoked approval put back into the file does not count.
-  - The item is read once per launch and cached. A failed or denied read is
-    not cached, and then nothing is approved.
-  - Revoke also deletes the copies.
+  - The item is read once per launch and cached.
+  - **Before every write**, the item is read again and epochs are merged
+    (highest wins). A second app instance with a stale cache (for example a
+    dev build next to the release build) can't roll back another's revoke.
+  - **A failed or denied read** isn't cached as a value: nothing is approved
+    meanwhile. It is retried only when the user acts in Apps → Plugins
+    (review, approve, revoke) or after 5 minutes, so the gateway doesn't
+    re-prompt on every request.
+  - **Revoke** always deletes the approval entry and the copies, and stops
+    the processes. If the Keychain write fails, the user sees the error: the
+    revoke happened locally, but the counter wasn't raised.
+- **Housekeeping.** At startup, copies and `.tmp-*` folders that no approval
+  entry names are removed. Files are hashed in 64 KiB chunks.
 - **Gateway:** loopback only, a per-caller and per-plugin bearer token, and a
   local `Origin` only. A browser page can't reach a plugin without a token.
 - **Cloud:** the user's own token, sent only to an approved instance, with
@@ -370,8 +404,8 @@ anything the user can, with or without plugins.
   - The plugin page's own results are not redacted. Only agent tokens carry
     a redactor.
   - Child JSON-RPC error codes are flattened to -32603. The message is kept.
-  - Old copies are deleted on the next approve or revoke. If the app quits in
-    between, an unused copy may linger.
+  - Every local start re-hashes the whole copy while holding that plugin's
+    start lock. With a large `node_modules`, this costs time on each start.
 
 ## Phase 2: Channels as its own server
 

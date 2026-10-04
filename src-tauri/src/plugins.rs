@@ -305,6 +305,8 @@ pub struct ServerReview {
     files: usize,
     bytes: u64,
     fingerprint: String,
+    /// why this version can't be approved (e.g. `uv run` without a lock)
+    problem: Option<String>,
     /// this exact version (and, if any, this cloud instance) is approved
     approved: bool,
     /// some version is approved (Revoke applies)
@@ -351,7 +353,9 @@ fn review(state_file: &Path, snapshots: &Path, id: &str, dir: &Path, binding: Op
         }
     });
     let cloud_ok = cloud.as_ref().is_none_or(|c| c.binding.is_none() || c.approved);
+    let problem = server.local.as_ref().and_then(|l| plugin_backends::check_fetchers(&l.command, dir).err());
     Ok(ServerReview {
+        problem,
         executable: server.local.as_ref().map(|l| resolve_executable(&l.command[0], &runs_from)),
         command: server.local.map(|l| l.command),
         cwd: dir.display().to_string(),
@@ -370,6 +374,8 @@ fn review(state_file: &Path, snapshots: &Path, id: &str, dir: &Path, binding: Op
 /// The plugin's backend as the approval dialog shows it (every file read now).
 #[tauri::command]
 pub fn plugin_server_review(id: String) -> Result<ServerReview, String> {
+    // The user is here: a Keychain prompt they denied earlier may be asked again.
+    plugin_trust::retry_keychain();
     if !valid_id(&id) {
         return Err(format!("invalid plugin id: {id}"));
     }
@@ -397,15 +403,21 @@ fn approve(
     current_binding: Option<&str>,
 ) -> Result<(), String> {
     if !approve {
-        plugin_trust::bump(id)?;
+        // The local part always happens; a Keychain failure is reported after.
+        let bumped = plugin_trust::bump(id);
         edit_state_at(state_file, |state| {
             state.server_approvals.remove(id);
             Ok(())
         })?;
         plugin_trust::remove_snapshot(&snapshots.join(id));
-        return Ok(());
+        return bumped.map(|_| ()).map_err(|e| {
+            format!("revoked here (approval and copies deleted), but the Keychain counter couldn't be updated, so a saved copy of the old approval could still be put back: {e}")
+        });
     }
     let shown = shown.ok_or("approving needs the fingerprint that was shown")?;
+    if let Some(problem) = review(state_file, snapshots, id, dir, None)?.problem {
+        return Err(problem);
+    }
     if shown_binding != current_binding {
         return Err("the workspace's cloud instance changed since it was shown; review it again".into());
     }
@@ -437,19 +449,53 @@ fn approve(
         state.server_approvals.insert(id.to_string(), serde_json::to_value(&a).map_err(|e| e.to_string())?);
         Ok(())
     })?;
-    // Older versions' copies go; their processes are stopped by the reconcile.
-    if let Ok(entries) = std::fs::read_dir(snapshots.join(id)) {
-        for e in entries.flatten().filter(|e| e.path() != snapshot) {
-            plugin_trust::remove_snapshot(&e.path());
+    // Older versions' copies (and venvs) go; their processes are stopped by the reconcile.
+    prune(&snapshots.join(id), Some(&tree.fingerprint));
+    Ok(())
+}
+
+/// Remove everything in a plugin's snapshot folder except `keep`'s copy and
+/// venv (`<fp>` and `<fp>.venv`); with `None`, the folder itself.
+fn prune(dir: &Path, keep: Option<&str>) {
+    let Some(keep) = keep else {
+        plugin_trust::remove_snapshot(dir);
+        return;
+    };
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name != keep && name != format!("{keep}.venv") {
+                plugin_trust::remove_snapshot(&e.path());
+            }
         }
     }
-    Ok(())
+}
+
+/// At startup: drop copies no approval entry names (uninstalled plugins,
+/// superseded versions, `.tmp-*` from a crash). Reads only the state file;
+/// a kept copy still has to pass the MAC and epoch to be used.
+pub fn sweep_snapshots(snapshots: &Path) {
+    sweep_with(snapshots, &load_state());
+}
+
+fn sweep_with(snapshots: &Path, state: &State) {
+    let Ok(entries) = std::fs::read_dir(snapshots) else { return };
+    for e in entries.flatten() {
+        let id = e.file_name().to_string_lossy().into_owned();
+        let keep = state
+            .server_approvals
+            .get(&id)
+            .and_then(|a| a.get("fingerprint")?.as_str().map(String::from))
+            .filter(|fp| fp.len() == 64 && fp.chars().all(|c| c.is_ascii_hexdigit()));
+        prune(&e.path(), keep.as_deref());
+    }
 }
 
 /// Allow (or revoke) the plugin's backend exactly as reviewed: `fingerprint`
 /// and `binding` from `plugin_server_review`.
 #[tauri::command]
 pub fn plugin_approve_server(id: String, approve: bool, fingerprint: Option<String>, binding: Option<String>) -> Result<(), String> {
+    plugin_trust::retry_keychain();
     if !valid_id(&id) {
         return Err(format!("invalid plugin id: {id}"));
     }
@@ -458,7 +504,7 @@ pub fn plugin_approve_server(id: String, approve: bool, fingerprint: Option<Stri
     if approve {
         server_plugin(&id)?;
     }
-    self::approve(
+    let done = self::approve(
         &state_file()?,
         &plugin_trust::snapshot_root(),
         &id,
@@ -467,9 +513,10 @@ pub fn plugin_approve_server(id: String, approve: bool, fingerprint: Option<Stri
         fingerprint.as_deref(),
         binding.as_deref(),
         current.as_deref(),
-    )?;
+    );
+    // Also after a partly failed revoke: its processes must stop.
     plugin_backends::global().reconcile();
-    Ok(())
+    done
 }
 
 /// Enabled plugins with a backend, for plugin_backends.rs.
@@ -1262,6 +1309,58 @@ mod tests {
         std::fs::write(&f.state, &second).unwrap();
         assert!(f.grant().is_none(), "superseded approval rejected");
         plugin_trust::remove_snapshot(&f.root);
+    }
+
+    /// R2-4: revoking works locally even when the Keychain can't be written.
+    #[test]
+    fn revoke_without_the_keychain() {
+        let f = server_plugin_at("demo-revoke-nokc");
+        f.approve(true, Some(&f.review(None).fingerprint), None, None).unwrap();
+        assert!(f.grant().is_some());
+        plugin_trust::TEST_FAIL_WRITES.lock().unwrap().push(f.id.clone());
+        let err = f.approve(false, None, None, None).unwrap_err();
+        plugin_trust::TEST_FAIL_WRITES.lock().unwrap().retain(|i| i != &f.id);
+        assert!(err.contains("revoked here") && err.contains("Keychain"), "{err}");
+        assert!(f.grant().is_none(), "approval entry deleted");
+        assert!(!f.snaps.join(&f.id).exists(), "copies deleted");
+        assert!(!f.plugin().server_approved && !f.plugin().stale_approval);
+        plugin_trust::remove_snapshot(&f.root);
+    }
+
+    /// R2-1: a `uv run` plugin without a lock can't be approved.
+    #[test]
+    fn uv_without_a_lock_cant_be_approved() {
+        let f = server_plugin_at("demo-uv");
+        std::fs::write(f.dir.join("plugin.json"), r#"{"id":"demo-uv","title":"UV","server":{"local":{"command":["uv","run","server.py"]}}}"#).unwrap();
+        std::fs::write(f.dir.join("server.py"), "print(1)").unwrap();
+        let r = f.review(None);
+        assert!(r.problem.as_deref().is_some_and(|p| p.contains("uv.lock")), "{:?}", r.problem);
+        assert!(f.approve(true, Some(&r.fingerprint), None, None).unwrap_err().contains("uv.lock"));
+        std::fs::write(f.dir.join("uv.lock"), "version = 1").unwrap();
+        let r = f.review(None);
+        assert!(r.problem.is_none());
+        f.approve(true, Some(&r.fingerprint), None, None).unwrap();
+        plugin_trust::remove_snapshot(&f.root);
+    }
+
+    /// R2-7: startup sweep keeps only copies an approval entry names.
+    #[test]
+    fn sweeps_orphan_snapshots() {
+        let root = std::env::temp_dir().join(format!("aa-sweep-{}", uuid::Uuid::new_v4().simple()));
+        let fp = "a".repeat(64);
+        for d in [format!("gone/{fp}"), format!("kept/{fp}"), format!("kept/{fp}.venv"), format!("kept/{}", "b".repeat(64)), "kept/.tmp-x".into()] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+        }
+        let state = State {
+            server_approvals: [("kept".to_string(), serde_json::json!({ "fingerprint": fp }))].into(),
+            ..State::default()
+        };
+        sweep_with(&root, &state);
+        let left: Vec<String> = std::fs::read_dir(root.join("kept")).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert!(!root.join("gone").exists());
+        assert_eq!(left.len(), 2, "{left:?}");
+        assert!(left.contains(&fp) && left.contains(&format!("{fp}.venv")));
+        plugin_trust::remove_snapshot(&root);
     }
 
     /// NEW-5: approving binds the cloud instance that was shown, by id and

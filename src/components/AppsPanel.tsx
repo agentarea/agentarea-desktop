@@ -741,10 +741,11 @@ function BackendBar({ plugin, onError }: { plugin: Plugin; onError: (e: string) 
                 when it appears).
               </span>
             ))}
+          {review.problem && <span className="text-destructive">Can't be allowed: {review.problem}</span>}
           <div className="mt-1 flex gap-2">
             <Button
               size="xs"
-              disabled={review.approved}
+              disabled={review.approved || !!review.problem}
               onClick={() =>
                 run(async () => {
                   try {

@@ -116,33 +116,88 @@ fn leaves_folder(arg: &str) -> bool {
     })
 }
 
-/// The command runs only what the approval covers: no downloaders, and
-/// arguments that stay inside the plugin folder (the interpreter itself,
-/// `command[0]`, may be any path; the review shows where it resolves).
+/// A module specifier fetched from a registry or the network when imported.
+fn remote_specifier(arg: &str) -> bool {
+    let a = arg.trim_matches(|c| c == '"' || c == '\'').to_ascii_lowercase();
+    ["npm:", "jsr:", "http:", "https:"].iter().any(|p| a.starts_with(p) || a.contains(&format!("={p}")))
+        || a.contains("network-imports")
+}
+
+/// The command runs only what the approval covers (manifest-level checks):
+/// - no downloaders (`npx`, `uvx`, …, `npm exec`, `pnpm dlx`, `bun x`, `uv tool`);
+/// - no `npm:` / `jsr:` / `http(s):` specifiers, no network imports;
+/// - `uv run` without `--with*` / `--script` / `--isolated`;
+/// - `bun` only with `--no-install`, `deno` only with `--no-remote --no-npm`;
+/// - arguments, and a relative program path, stay inside the plugin folder
+///   (an absolute program, the interpreter, may be anywhere; the review shows
+///   where it resolves).
+///
+/// `check_fetchers` adds the checks that need the folder (a `uv.lock`).
 fn check_command(command: &[String]) -> Result<(), String> {
     let program = command[0].rsplit('/').next().unwrap_or("");
+    let args = &command[1..];
+    let has = |f: &str| args.iter().any(|a| a == f || a.starts_with(&format!("{f}=")));
     let dlx = |w: &str| command.get(1).is_some_and(|a| a == w);
+    let fetches = |why: &str| Err(format!("server.local.command {why}, which fetches code at run time; vendor the dependency into the plugin folder"));
     if DOWNLOADERS.contains(&program)
         || (program == "npm" && dlx("exec"))
         || (program == "pnpm" && dlx("dlx"))
         || (program == "bun" && dlx("x"))
         || (program == "uv" && dlx("tool"))
     {
-        return Err(format!(
-            "server.local.command uses {program}, which downloads code at run time; vendor the dependency into the plugin folder"
-        ));
+        return fetches(&format!("uses {program}"));
     }
-    if let Some(a) = command[1..].iter().find(|a| leaves_folder(a)) {
+    if let Some(a) = args.iter().find(|a| remote_specifier(a)) {
+        return fetches(&format!("names \"{a}\""));
+    }
+    if program == "uv" {
+        if let Some(f) = ["--with", "--with-requirements", "--with-editable", "--script", "--isolated"].into_iter().find(|f| has(f)) {
+            return fetches(&format!("runs uv with {f}"));
+        }
+    }
+    if program == "bun" && !has("--no-install") {
+        return fetches("runs bun without --no-install");
+    }
+    if program == "deno" && !(has("--no-remote") && has("--no-npm")) {
+        return fetches("runs deno without --no-remote --no-npm");
+    }
+    if !command[0].starts_with('/') && command[0].contains('/') && leaves_folder(&command[0]) {
+        return Err(format!("server.local.command program \"{}\" points outside the plugin folder", command[0]));
+    }
+    if let Some(a) = args.iter().find(|a| leaves_folder(a)) {
         return Err(format!("server.local.command argument \"{a}\" points outside the plugin folder"));
     }
     Ok(())
 }
 
-/// Env variables that change what an interpreter loads; flagged in the review.
+/// Checks that need the plugin folder (live, or its snapshot): `uv run`
+/// installs only from a committed `uv.lock` (hash-pinned, `UV_FROZEN`), and a
+/// script with inline dependencies (`# /// script`) needs its own lock.
+pub fn check_fetchers(command: &[String], dir: &Path) -> Result<(), String> {
+    if command[0].rsplit('/').next() != Some("uv") || command.get(1).map(String::as_str) != Some("run") {
+        return Ok(());
+    }
+    if !dir.join("uv.lock").is_file() {
+        return Err("`uv run` needs a uv.lock in the plugin folder (otherwise it resolves dependencies at run time)".into());
+    }
+    for a in command[2..].iter().filter(|a| a.ends_with(".py")) {
+        let inline = std::fs::read_to_string(dir.join(a)).is_ok_and(|src| src.lines().any(|l| l.trim() == "# /// script"));
+        if inline && !dir.join(format!("{a}.lock")).is_file() {
+            return Err(format!("{a} declares inline dependencies; commit {a}.lock (uv lock --script {a})"));
+        }
+    }
+    Ok(())
+}
+
+/// Env variables that change what an interpreter loads or where a package
+/// tool fetches from; flagged in the review.
 pub fn risky_env(name: &str) -> bool {
-    ["NODE_OPTIONS", "NODE_PATH", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME", "PERL5LIB", "RUBYOPT", "BASH_ENV"].contains(&name)
-        || name.starts_with("LD_")
-        || name.starts_with("DYLD_")
+    [
+        "NODE_OPTIONS", "NODE_PATH", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME", "PYTHONUSERBASE", "PERL5LIB", "PERL5OPT",
+        "RUBYOPT", "RUBYLIB", "JAVA_TOOL_OPTIONS", "BASH_ENV",
+    ]
+    .contains(&name)
+        || ["LD_", "DYLD_", "UV_", "PIP_", "npm_config_", "NPM_CONFIG_", "BUN_", "DENO_"].iter().any(|p| name.starts_with(p))
 }
 
 // ── placement ────────────────────────────────────────────────────────────────
@@ -596,8 +651,9 @@ impl Backends {
         let scrub_env: Vec<(String, String)> = decl.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
         let started = (|| {
             plugin_trust::verify(id, &grant.snapshot, &approval)?;
+            check_fetchers(&decl.command, &grant.snapshot)?;
             std::fs::create_dir_all(data_dir).map_err(|err| format!("data folder: {err}"))?;
-            let env = child_env(&decl.env, id, data_dir);
+            let env = child_env(&decl.env, &decl.command, id, data_dir, &grant.snapshot);
             local_mcp::start_stdio(&decl.command[0], &decl.command[1..], &env, &grant.snapshot)
                 .map_err(|err| format!("local server: {}", scrub(&scrub_env, &err)))
         })();
@@ -705,27 +761,40 @@ impl Backends {
     }
 }
 
-/// The child's environment: the approved `env`, the app's two variables,
-/// and caches pointed into the data folder (the snapshot is read-only, and a
-/// backend must never write next to its code). `NODE_PATH` / user site
-/// packages are off unless the approved env sets them.
-pub fn child_env(env: &BTreeMap<String, String>, id: &str, data_dir: &Path) -> BTreeMap<String, String> {
+/// The child's environment: the approved `env`, then what the app forces.
+/// - Package tools are offline (`UV_OFFLINE`, `PIP_NO_INDEX`,
+///   `npm_config_offline`, `BUN_CONFIG_NO_INSTALL`… ), except `uv run`,
+///   which may install exactly what the reviewed `uv.lock` pins
+///   (`UV_FROZEN=1`, hashes checked) into an app-owned venv next to the
+///   snapshot.
+/// - No bytecode writes, no user site packages, no `NODE_PATH`; other caches
+///   go to the data folder (the snapshot is read-only).
+/// - `AGENTAREA_PLUGIN_ID` and `AGENTAREA_DATA_DIR`.
+pub fn child_env(env: &BTreeMap<String, String>, command: &[String], id: &str, data_dir: &Path, snapshot: &Path) -> BTreeMap<String, String> {
     let cache = data_dir.join(".cache");
-    let mut out: BTreeMap<String, String> = [
-        ("XDG_CACHE_HOME", cache.clone()),
-        ("PYTHONPYCACHEPREFIX", cache.join("pycache")),
-        ("UV_CACHE_DIR", cache.join("uv")),
-        ("UV_PROJECT_ENVIRONMENT", data_dir.join(".venv")),
-        ("npm_config_cache", cache.join("npm")),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_string(), v.display().to_string()))
-    .collect();
-    out.insert("NODE_PATH".into(), String::new());
-    out.insert("PYTHONNOUSERSITE".into(), "1".into());
-    out.extend(env.clone());
-    out.insert("AGENTAREA_PLUGIN_ID".into(), id.to_string());
-    out.insert("AGENTAREA_DATA_DIR".into(), data_dir.display().to_string());
+    let uv_run = command.first().and_then(|c| c.rsplit('/').next()) == Some("uv");
+    let mut out = env.clone();
+    let mut set = |k: &str, v: String| {
+        out.insert(k.to_string(), v);
+    };
+    set("XDG_CACHE_HOME", cache.display().to_string());
+    set("UV_CACHE_DIR", cache.join("uv").display().to_string());
+    set("npm_config_cache", cache.join("npm").display().to_string());
+    set("UV_PROJECT_ENVIRONMENT", snapshot.with_extension("venv").display().to_string());
+    set("UV_FROZEN", "1".into());
+    set("UV_NO_PROGRESS", "1".into());
+    if !uv_run {
+        set("UV_OFFLINE", "1".into());
+    }
+    set("PIP_NO_INDEX", "1".into());
+    set("npm_config_offline", "true".into());
+    set("BUN_CONFIG_NO_INSTALL", "1".into());
+    set("DENO_NO_REMOTE", "1".into());
+    set("PYTHONDONTWRITEBYTECODE", "1".into());
+    set("PYTHONNOUSERSITE", "1".into());
+    set("NODE_PATH", String::new());
+    set("AGENTAREA_PLUGIN_ID", id.to_string());
+    set("AGENTAREA_DATA_DIR", data_dir.display().to_string());
     out
 }
 
@@ -898,10 +967,12 @@ mod tests {
             &["bunx", "x"],
             &["pipx", "run", "x"],
         ] {
-            assert!(ok(bad).unwrap_err().contains("downloads code"), "{bad:?}");
+            assert!(ok(bad).unwrap_err().contains("fetches code at run time"), "{bad:?}");
         }
         for bad in [
-            &["node", "../shared/server.mjs"][..],
+            &["../../x/bin/server"][..],
+            &["bin/../../server"],
+            &["node", "../shared/server.mjs"],
             &["node", "/Users/me/proj/server.js"],
             &["node", "--require=/tmp/x.js", "s.js"],
             &["node", "--import", "~/x.mjs"],
@@ -910,29 +981,81 @@ mod tests {
             assert!(ok(bad).unwrap_err().contains("outside the plugin folder"), "{bad:?}");
         }
         assert!(risky_env("NODE_OPTIONS") && risky_env("DYLD_INSERT_LIBRARIES") && risky_env("LD_PRELOAD") && risky_env("PYTHONPATH"));
+        for k in ["PYTHONUSERBASE", "PERL5OPT", "RUBYLIB", "JAVA_TOOL_OPTIONS", "npm_config_registry", "UV_INDEX_URL", "PIP_INDEX_URL", "BUN_CONFIG_REGISTRY", "DENO_DIR"] {
+            assert!(risky_env(k), "{k}");
+        }
         assert!(!risky_env("LOG_LEVEL"));
     }
 
     #[test]
-    fn child_env_keeps_caches_out_of_the_snapshot() {
-        let env = child_env(&BTreeMap::from([("LOG".to_string(), "1".to_string()), ("AGENTAREA_PLUGIN_ID".to_string(), "spoof".to_string())]), "p", Path::new("/d"));
+    fn child_env_is_offline_and_keeps_caches_out_of_the_snapshot() {
+        let node = ["node".to_string(), "s.mjs".to_string()];
+        let plugin_env = BTreeMap::from([
+            ("LOG".to_string(), "1".to_string()),
+            ("AGENTAREA_PLUGIN_ID".to_string(), "spoof".to_string()),
+            ("UV_OFFLINE".to_string(), "0".to_string()),
+            ("npm_config_offline".to_string(), "false".to_string()),
+        ]);
+        let env = child_env(&plugin_env, &node, "p", Path::new("/d"), Path::new("/s/p/abc"));
         assert_eq!(env["AGENTAREA_PLUGIN_ID"], "p", "the app's variables win");
         assert_eq!(env["AGENTAREA_DATA_DIR"], "/d");
-        assert_eq!(env["PYTHONPYCACHEPREFIX"], "/d/.cache/pycache");
-        assert_eq!(env["UV_PROJECT_ENVIRONMENT"], "/d/.venv");
+        assert_eq!(env["LOG"], "1");
+        // R2-1: offline, and the plugin's env can't turn it back on.
+        for (k, v) in [("UV_OFFLINE", "1"), ("UV_FROZEN", "1"), ("PIP_NO_INDEX", "1"), ("npm_config_offline", "true"), ("BUN_CONFIG_NO_INSTALL", "1"), ("DENO_NO_REMOTE", "1")] {
+            assert_eq!(env[k], v, "{k}");
+        }
+        assert_eq!((env["PYTHONDONTWRITEBYTECODE"].as_str(), env["PYTHONNOUSERSITE"].as_str(), env["NODE_PATH"].as_str()), ("1", "1", ""));
+        assert!(!env.contains_key("PYTHONPYCACHEPREFIX"));
+        assert_eq!(env["UV_PROJECT_ENVIRONMENT"], "/s/p/abc.venv", "app-owned, per snapshot");
         assert_eq!(env["XDG_CACHE_HOME"], "/d/.cache");
-        assert_eq!((env["NODE_PATH"].as_str(), env["PYTHONNOUSERSITE"].as_str(), env["LOG"].as_str()), ("", "1", "1"));
+        // uv run may install exactly the reviewed lock (frozen), so it isn't offline.
+        let uv = ["uv".to_string(), "run".to_string(), "server.py".to_string()];
+        let env = child_env(&BTreeMap::new(), &uv, "p", Path::new("/d"), Path::new("/s/p/abc"));
+        assert!(!env.contains_key("UV_OFFLINE"));
+        assert_eq!(env["UV_FROZEN"], "1");
     }
 
-    /// H1: a plugin may only name its own instance, `plugin:<id>`.
+    /// R2-1: every runtime fetcher pattern is refused, with a reason.
     #[test]
-    fn cloud_instance_must_be_the_plugins_own() {
-        let d = |inst: &str| ServerDecl { local: None, cloud: Some(CloudDecl { instance: inst.into() }) };
-        assert!(d("plugin:demo").validate("demo").is_ok());
-        for other in ["gmail", "plugin:other", "Plugin:demo", "plugin:demo ", " plugin:demo", "plugin:"] {
-            let err = d(other).validate("demo").unwrap_err();
-            assert!(err.contains("must be \"plugin:demo\""), "{other}: {err}");
+    fn runtime_fetchers_are_refused() {
+        let check = |c: &[&str]| check_command(&c.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        for bad in [
+            &["uv", "run", "--with", "requests", "server.py"][..],
+            &["uv", "run", "--with=requests", "server.py"],
+            &["uv", "run", "--script", "server.py"],
+            &["uv", "run", "--isolated", "server.py"],
+            &["deno", "run", "npm:some-mcp"],
+            &["deno", "run", "jsr:@scope/mcp"],
+            &["deno", "run", "https://example.com/server.ts"],
+            &["deno", "run", "server.ts"],
+            &["deno", "run", "--no-remote", "server.ts"],
+            &["bun", "server.ts"],
+            &["bun", "run", "server.ts"],
+            &["node", "--experimental-network-imports", "s.mjs"],
+            &["node", "--import=https://x.example/h.mjs", "s.mjs"],
+            &["python3", "-m", "http:x"],
+        ] {
+            let err = check(bad).unwrap_err();
+            assert!(err.contains("fetches code at run time"), "{bad:?}: {err}");
         }
+        assert!(check(&["bun", "--no-install", "server.ts"]).is_ok());
+        assert!(check(&["deno", "run", "--no-remote", "--no-npm", "server.ts"]).is_ok());
+        assert!(check(&["uv", "run", "server.py"]).is_ok(), "manifest-wise; the lock is checked with the folder");
+
+        // uv run needs a committed lock; an inline-dependency script needs its own.
+        let dir = std::env::temp_dir().join(format!("aa-fetchers-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let uv: Vec<String> = ["uv", "run", "server.py"].iter().map(|s| s.to_string()).collect();
+        std::fs::write(dir.join("server.py"), "print(1)").unwrap();
+        assert!(check_fetchers(&uv, &dir).unwrap_err().contains("needs a uv.lock"));
+        std::fs::write(dir.join("uv.lock"), "version = 1").unwrap();
+        assert!(check_fetchers(&uv, &dir).is_ok());
+        std::fs::write(dir.join("server.py"), "# /// script\n# dependencies = [\"httpx\"]\n# ///\nprint(1)").unwrap();
+        assert!(check_fetchers(&uv, &dir).unwrap_err().contains("inline dependencies"));
+        std::fs::write(dir.join("server.py.lock"), "version = 1").unwrap();
+        assert!(check_fetchers(&uv, &dir).is_ok());
+        assert!(check_fetchers(&["node".to_string(), "s.mjs".to_string()], &dir).is_ok());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

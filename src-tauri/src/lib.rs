@@ -762,7 +762,9 @@ pub fn run() {
             app.manage(runners::Runners::new(Arc::new(move |session_id, event| emit_agent(&handle, session_id, event))));
             // Approved plugin backends run from read-only copies in the app's own data.
             if let Ok(dir) = app.path().app_data_dir() {
-                plugin_trust::set_snapshot_root(dir.join("plugin-snapshots"));
+                let root = dir.join("plugin-snapshots");
+                plugin_trust::set_snapshot_root(root.clone());
+                std::thread::spawn(move || plugins::sweep_snapshots(&root));
             }
             match vault::Vault::user().and_then(secrets_mcp::SecretsMcp::start) {
                 Ok(server) => {

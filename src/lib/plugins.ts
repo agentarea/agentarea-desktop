@@ -49,6 +49,8 @@ export interface ServerReview {
   bytes: number;
   /** SHA-256 over the plugin folder as reviewed; passed back to approve */
   fingerprint: string;
+  /** why this version can't be approved (e.g. `uv run` without a uv.lock) */
+  problem: string | null;
   /** this exact version (and cloud instance, if any) is approved */
   approved: boolean;
   hasApproval: boolean;
