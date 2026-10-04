@@ -21,8 +21,22 @@ export type PlacementMode = 'auto' | 'local' | 'cloud';
 export interface PluginServer {
   /** a stdio MCP server started from the plugin folder */
   local: { command: string[] } | null;
-  /** an MCP instance in the AgentArea workspace, matched by name */
+  /** the AgentArea workspace's MCP instance named `plugin:<id>` */
   cloud: { instance: string } | null;
+}
+
+/** What the user approves (`plugin_server_review`): exactly what runs, where, with what. */
+export interface ServerReview {
+  command: string[] | null;
+  cwd: string;
+  /** the local server's extra environment, values included */
+  env: Record<string, string>;
+  cloudInstance: string | null;
+  /** files the fingerprint covers */
+  files: number;
+  /** SHA-256 over the plugin folder as reviewed; passed back to approve */
+  fingerprint: string;
+  approved: boolean;
 }
 
 /** A backend's placement in the active workspace. */
@@ -58,9 +72,11 @@ export interface Plugin {
   icon: string | null;
   /** MCP backend, reachable at one local gateway URL wherever it runs */
   server: PluginServer | null;
+  /** why plugin.json's `server` was not accepted */
+  serverError: string | null;
   /** placement the user picked; null without a server */
   placement: PlacementMode | null;
-  /** the user allowed the local server's exact command to run */
+  /** the user approved the plugin folder as it is now */
   serverApproved: boolean;
 }
 
@@ -132,9 +148,17 @@ export async function setPluginPlacement(id: string, mode: PlacementMode): Promi
   void usePlugins.getState().reloadBackends();
 }
 
-/** Allow (or revoke) running the plugin's local server command. */
-export async function approvePluginServer(id: string, approve: boolean): Promise<void> {
-  await invoke('plugin_approve_server', { id, approve });
+/** The plugin's backend as it would be approved now (reads every file). */
+export function reviewPluginServer(id: string): Promise<ServerReview> {
+  return invoke<ServerReview>('plugin_server_review', { id });
+}
+
+/**
+ * Allow the backend exactly as reviewed (`fingerprint` from the review; Rust
+ * refuses if the folder changed since), or revoke.
+ */
+export async function approvePluginServer(id: string, approve: boolean, fingerprint?: string): Promise<void> {
+  await invoke('plugin_approve_server', { id, approve, fingerprint: fingerprint ?? null });
   await usePlugins.getState().reload();
   void usePlugins.getState().reloadBackends();
 }
@@ -362,7 +386,8 @@ export async function runBridgeMethod(pluginId: string, method: string, params: 
     }
 
     // ── plugin: the plugin's own MCP backend (local or cloud, one gateway in Rust).
-    // The id is always the calling plugin's; there is no way to name another.
+    // The id is always the calling frame's plugin (PluginFrame passes it); the
+    // frame has no IPC of its own, so it can't name another.
     case 'plugin.placement': {
       await requireServer(pluginId);
       await usePlugins.getState().reloadBackends();

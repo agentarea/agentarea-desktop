@@ -501,17 +501,16 @@ fn child_path(bin: &std::path::Path) -> String {
 fn spawn(spec: &ServerSpec) -> Result<Server, String> {
     let cwd = mcp_dir()?;
     std::fs::create_dir_all(&cwd).map_err(|e| format!("mcp dir: {e}"))?;
-    spawn_in(&spec.command, &spec.args, &spec.env, &cwd)
+    let bin = if spec.command.contains('/') { PathBuf::from(&spec.command) } else { crate::cli_bin(&spec.command) };
+    spawn_in(&bin, &spec.command, &spec.args, &spec.env, &cwd)
 }
 
-/// Run `command` from `cwd`. A bare name is looked up like the agent CLIs; a
-/// relative path (`./bin/server`) is taken from `cwd`.
-fn spawn_in(command: &str, args: &[String], env: &BTreeMap<String, String>, cwd: &std::path::Path) -> Result<Server, String> {
-    let bin = if command.contains('/') { cwd.join(command) } else { crate::cli_bin(command) };
-    let mut cmd = Command::new(&bin);
+/// Run `bin` (named `command` in errors) from `cwd`.
+fn spawn_in(bin: &std::path::Path, command: &str, args: &[String], env: &BTreeMap<String, String>, cwd: &std::path::Path) -> Result<Server, String> {
+    let mut cmd = Command::new(bin);
     cmd.args(args)
         .envs(env)
-        .env("PATH", child_path(&bin))
+        .env("PATH", child_path(bin))
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -573,14 +572,16 @@ fn start_server(spec: &ServerSpec) -> Result<(Server, Value), String> {
 }
 
 /// A stdio server run from `cwd` (a plugin backend), started and initialized;
-/// returns it with its `initialize` result.
+/// returns it with its `initialize` result. A bare name is looked up like the
+/// agent CLIs; a relative path (`./bin/server`) is taken from `cwd`.
 pub(crate) fn start_stdio(
     command: &str,
     args: &[String],
     env: &BTreeMap<String, String>,
     cwd: &std::path::Path,
 ) -> Result<(Server, Value), String> {
-    initialize(spawn_in(command, args, env, cwd)?)
+    let bin = if command.contains('/') { cwd.join(command) } else { crate::cli_bin(command) };
+    initialize(spawn_in(&bin, command, args, env, cwd)?)
 }
 
 fn initialize(server: Server) -> Result<(Server, Value), String> {

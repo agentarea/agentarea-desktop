@@ -6,8 +6,10 @@
 //! an opaque-origin sandboxed iframe; the only way out is the host's
 //! postMessage bridge.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Mutex;
+use std::time::SystemTime;
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -15,6 +17,7 @@ use tauri::http::{Request, Response, StatusCode};
 use tauri::{Runtime, UriSchemeContext, UriSchemeResponder};
 
 use crate::plugin_backends::{self, Mode, ServerDecl};
+use crate::plugin_trust;
 use crate::web;
 
 pub const SCHEME: &str = "aa-plugin";
@@ -43,11 +46,18 @@ pub struct Plugin {
     icon: Option<String>,
     /// MCP backend (plugin_backends.rs): where it can run.
     server: Option<ServerDecl>,
+    /// Why plugin.json's `server` was not accepted (the plugin still loads,
+    /// without a backend).
+    #[serde(rename = "serverError")]
+    server_error: Option<String>,
     /// Where the user wants the backend: auto (default), local or cloud.
     placement: Option<Mode>,
-    /// The user allowed this exact local command to run.
+    /// The user approved the plugin folder as it is now (plugin_trust.rs).
     #[serde(rename = "serverApproved")]
     server_approved: bool,
+    /// The fingerprint a genuine (MAC-checked) approval names, current or not.
+    #[serde(skip)]
+    approval: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -60,7 +70,8 @@ struct Manifest {
     #[serde(default)]
     permissions: Vec<String>,
     icon: Option<String>,
-    server: Option<ServerDecl>,
+    #[serde(default)]
+    server: Option<serde_json::Value>,
 }
 
 /// Largest SVG icon a plugin may ship.
@@ -120,9 +131,16 @@ struct State {
     /// whole file unreadable.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     placements: HashMap<String, String>,
-    /// plugin id → the local server command the user allowed (fingerprint)
+    /// plugin id → `{fingerprint, mac}` (plugin_trust.rs); anything else in
+    /// there (hand edits, forgeries) simply doesn't count.
     #[serde(default, rename = "serverApprovals", skip_serializing_if = "HashMap::is_empty")]
-    server_approvals: HashMap<String, String>,
+    server_approvals: HashMap<String, serde_json::Value>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct Approval {
+    fingerprint: String,
+    mac: String,
 }
 
 pub const DEFAULT_CLOUD_ROOT: &str = "wiki/";
@@ -134,21 +152,39 @@ impl State {
             .and_then(|m| serde_json::from_value(serde_json::Value::String(m.clone())).ok())
             .unwrap_or_default()
     }
+
+    /// The fingerprint `id`'s approval names, if its MAC is genuine.
+    fn approval(&self, id: &str) -> Option<String> {
+        let a: Approval = serde_json::from_value(self.server_approvals.get(id)?.clone()).ok()?;
+        plugin_trust::verify(id, &a.fingerprint, &a.mac).then_some(a.fingerprint)
+    }
 }
+
+/// plugins-state.json is read-modify-written by several commands.
+static STATE_LOCK: Mutex<()> = Mutex::new(());
 
 fn load_state() -> State {
-    state_file()
-        .ok()
-        .and_then(|f| std::fs::read_to_string(f).ok())
-        .and_then(|json| serde_json::from_str::<State>(&json).ok())
-        .unwrap_or_default()
+    state_file().map(|f| load_state_at(&f)).unwrap_or_default()
 }
 
-fn save_state(mut state: State) -> Result<(), String> {
+fn load_state_at(file: &Path) -> State {
+    std::fs::read_to_string(file).ok().and_then(|json| serde_json::from_str::<State>(&json).ok()).unwrap_or_default()
+}
+
+/// Change plugins-state.json under the lock.
+fn edit_state<T>(f: impl FnOnce(&mut State) -> Result<T, String>) -> Result<T, String> {
+    edit_state_at(&state_file()?, f)
+}
+
+fn edit_state_at<T>(file: &Path, f: impl FnOnce(&mut State) -> Result<T, String>) -> Result<T, String> {
+    let _guard = STATE_LOCK.lock().map_err(|_| "plugin state lock poisoned")?;
+    let mut state = load_state_at(file);
+    let out = f(&mut state)?;
     state.disabled.sort();
     state.disabled.dedup();
     let json = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
-    std::fs::write(state_file()?, json).map_err(|e| format!("save plugin state: {e}"))
+    std::fs::write(file, json).map_err(|e| format!("save plugin state: {e}"))?;
+    Ok(out)
 }
 
 fn disabled() -> HashSet<String> {
@@ -160,12 +196,13 @@ pub fn set_plugin_enabled(id: String, enabled: bool) -> Result<(), String> {
     if !valid_id(&id) {
         return Err(format!("invalid plugin id: {id}"));
     }
-    let mut state = load_state();
-    state.disabled.retain(|d| d != &id);
-    if !enabled {
-        state.disabled.push(id);
-    }
-    save_state(state)?;
+    edit_state(|state| {
+        state.disabled.retain(|d| d != &id);
+        if !enabled {
+            state.disabled.push(id);
+        }
+        Ok(())
+    })?;
     // A disabled plugin's local server stops.
     plugin_backends::global().reconcile();
     Ok(())
@@ -183,30 +220,88 @@ fn server_plugin(id: &str) -> Result<Plugin, String> {
 #[tauri::command]
 pub fn plugin_set_placement(id: String, mode: Mode) -> Result<(), String> {
     server_plugin(&id)?;
-    let mut state = load_state();
-    match mode {
-        Mode::Auto => state.placements.remove(&id),
-        Mode::Local => state.placements.insert(id, "local".into()),
-        Mode::Cloud => state.placements.insert(id, "cloud".into()),
-    };
-    save_state(state)?;
+    edit_state(|state| {
+        match mode {
+            Mode::Auto => state.placements.remove(&id),
+            Mode::Local => state.placements.insert(id, "local".into()),
+            Mode::Cloud => state.placements.insert(id, "cloud".into()),
+        };
+        Ok(())
+    })?;
     plugin_backends::global().reconcile();
     Ok(())
 }
 
-/// Allow (or revoke) running the plugin's local server: the approval names
-/// its exact command and env, so an edited plugin.json asks again.
+/// What the user is asked to approve: exactly what will run and what it may
+/// reach, plus the fingerprint of the folder as shown.
+#[derive(Debug, Serialize)]
+pub struct ServerReview {
+    /// local server: program and arguments, run from `cwd`
+    command: Option<Vec<String>>,
+    cwd: String,
+    /// local server: its extra environment, values included
+    env: BTreeMap<String, String>,
+    /// cloud: the workspace MCP instance it uses (`plugin:<id>`)
+    #[serde(rename = "cloudInstance")]
+    cloud_instance: Option<String>,
+    /// files the fingerprint covers
+    files: usize,
+    fingerprint: String,
+    approved: bool,
+}
+
+fn review(state_file: &Path, id: &str, dir: &Path) -> Result<ServerReview, String> {
+    let server = load_folder(dir, id).and_then(|p| p.server).ok_or_else(|| format!("plugin {id} has no backend"))?;
+    let fingerprint = plugin_trust::fingerprint(id, dir)?;
+    let approved = load_state_at(state_file).approval(id).as_deref() == Some(fingerprint.as_str());
+    Ok(ServerReview {
+        command: server.local.as_ref().map(|l| l.command.clone()),
+        cwd: dir.display().to_string(),
+        env: server.local.map(|l| l.env).unwrap_or_default(),
+        cloud_instance: server.cloud.map(|c| c.instance),
+        files: plugin_trust::file_count(dir)?,
+        fingerprint,
+        approved,
+    })
+}
+
+/// The plugin's backend as the approval dialog shows it (every file read now).
 #[tauri::command]
-pub fn plugin_approve_server(id: String, approve: bool) -> Result<(), String> {
-    let plugin = server_plugin(&id)?;
-    let local = plugin.server.and_then(|s| s.local).ok_or_else(|| format!("plugin {id} has no local server"))?;
-    let mut state = load_state();
-    if approve {
-        state.server_approvals.insert(id, plugin_backends::fingerprint(&local));
-    } else {
-        state.server_approvals.remove(&id);
+pub fn plugin_server_review(id: String) -> Result<ServerReview, String> {
+    if !valid_id(&id) {
+        return Err(format!("invalid plugin id: {id}"));
     }
-    save_state(state)?;
+    review(&state_file()?, &id, &plugins_dir()?.join(&id))
+}
+
+/// Approve the plugin folder exactly as shown (`fingerprint` from
+/// `plugin_server_review`), or revoke. Refused if anything changed since.
+fn approve(state_file: &Path, id: &str, dir: &Path, approve: bool, shown: Option<&str>) -> Result<(), String> {
+    if !approve {
+        return edit_state_at(state_file, |state| {
+            state.server_approvals.remove(id);
+            Ok(())
+        });
+    }
+    let shown = shown.ok_or("approving needs the fingerprint that was shown")?;
+    let now = review(state_file, id, dir)?.fingerprint;
+    if now != shown {
+        return Err("the plugin changed since it was shown; review it again".into());
+    }
+    let mac = plugin_trust::sign(id, &now)?;
+    edit_state_at(state_file, |state| {
+        let a = serde_json::to_value(Approval { fingerprint: now, mac }).map_err(|e| e.to_string())?;
+        state.server_approvals.insert(id.to_string(), a);
+        Ok(())
+    })
+}
+
+/// Allow (or revoke) the plugin's backend: its local server may run and its
+/// cloud instance may be used, for the folder exactly as reviewed.
+#[tauri::command]
+pub fn plugin_approve_server(id: String, approve: bool, fingerprint: Option<String>) -> Result<(), String> {
+    server_plugin(&id)?;
+    self::approve(&state_file()?, &id, &plugins_dir()?.join(&id), approve, fingerprint.as_deref())?;
     plugin_backends::global().reconcile();
     Ok(())
 }
@@ -224,6 +319,7 @@ pub fn backend_entries() -> Vec<plugin_backends::Entry> {
                 decl: p.server?,
                 mode: p.placement.unwrap_or_default(),
                 approved: p.server_approved,
+                approval: p.approval,
                 id: p.id,
             })
         })
@@ -234,17 +330,18 @@ pub fn backend_entries() -> Vec<plugin_backends::Entry> {
 #[tauri::command]
 pub fn plugin_set_root(id: String, path: Option<String>) -> Result<(), String> {
     fs_plugin(&id)?;
-    let mut state = load_state();
-    match path {
-        Some(p) if PathBuf::from(&p).is_dir() => {
-            state.roots.insert(id, p);
+    edit_state(|state| {
+        match path {
+            Some(p) if PathBuf::from(&p).is_dir() => {
+                state.roots.insert(id, p);
+            }
+            Some(p) => return Err(format!("not a folder: {p}")),
+            None => {
+                state.roots.remove(&id);
+            }
         }
-        Some(p) => return Err(format!("not a folder: {p}")),
-        None => {
-            state.roots.remove(&id);
-        }
-    }
-    save_state(state)
+        Ok(())
+    })
 }
 
 /// Set (or with `None`, reset to `wiki/`) the workspace-files prefix a
@@ -256,20 +353,19 @@ pub fn plugin_set_cloud_root(id: String, prefix: Option<String>) -> Result<Strin
         .find(|p| p.id == id)
         .filter(|p| p.enabled && p.permissions.iter().any(|x| x == "cloud"))
         .ok_or_else(|| format!("plugin {id} has no cloud access"))?;
-    let mut state = load_state();
-    let stored = match prefix {
-        Some(p) => {
-            let p = cloud_prefix(&p).ok_or_else(|| format!("bad folder: {p}"))?;
-            state.cloud_roots.insert(id, p.clone());
-            p
-        }
-        None => {
-            state.cloud_roots.remove(&id);
-            DEFAULT_CLOUD_ROOT.to_string()
-        }
-    };
-    save_state(state)?;
-    Ok(stored)
+    edit_state(|state| {
+        Ok(match prefix {
+            Some(p) => {
+                let p = cloud_prefix(&p).ok_or_else(|| format!("bad folder: {p}"))?;
+                state.cloud_roots.insert(id, p.clone());
+                p
+            }
+            None => {
+                state.cloud_roots.remove(&id);
+                DEFAULT_CLOUD_ROOT.to_string()
+            }
+        })
+    })
 }
 
 /// A workspace-files folder as a prefix: "" (the whole library) or plain
@@ -425,10 +521,19 @@ fn parse_manifest(folder: &str, json: &str) -> Option<Plugin> {
         || m.title.trim().is_empty()
         || safe_relative(&entry).is_none()
         || sidebar.as_deref().is_some_and(|e| safe_relative(e).is_none())
-        || m.server.as_ref().is_some_and(|s| s.validate().is_err())
     {
         return None;
     }
+    let (server, server_error) = match m.server {
+        None | Some(serde_json::Value::Null) => (None, None),
+        Some(v) => match serde_json::from_value::<ServerDecl>(v) {
+            Ok(decl) => match decl.validate(&m.id) {
+                Ok(()) => (Some(decl), None),
+                Err(e) => (None, Some(e)),
+            },
+            Err(e) => (None, Some(format!("server: {e}"))),
+        },
+    };
     Some(Plugin {
         id: m.id,
         title: m.title.trim().to_string(),
@@ -440,10 +545,56 @@ fn parse_manifest(folder: &str, json: &str) -> Option<Plugin> {
         root: None,
         cloud_root: None,
         icon: m.icon.as_deref().and_then(icon_spec),
-        server: m.server,
+        server,
+        server_error,
         placement: None,
         server_approved: false,
+        approval: None,
     })
+}
+
+/// A file's (mtime, size), to tell when it changed.
+type Stamp = Option<(SystemTime, u64)>;
+
+fn stamp(path: &Path) -> Stamp {
+    std::fs::metadata(path).ok().and_then(|m| Some((m.modified().ok()?, m.len())))
+}
+
+/// Parsed plugin folders by path: (plugin.json stamp, SVG icon path + stamp,
+/// the parse). Gateway requests list plugins on every message, so a folder is
+/// re-read only when its plugin.json or icon file changed.
+type ManifestCache = HashMap<PathBuf, (Stamp, Option<(PathBuf, Stamp)>, Option<Plugin>)>;
+static MANIFESTS: Mutex<Option<ManifestCache>> = Mutex::new(None);
+
+/// One plugin folder, from the cache while its files are unchanged.
+fn load_folder(path: &Path, folder: &str) -> Option<Plugin> {
+    let manifest = path.join("plugin.json");
+    let ms = stamp(&manifest);
+    ms?;
+    if let Some((_, _, cached)) = MANIFESTS.lock().ok()?.as_ref().and_then(|m| m.get(path)).filter(|(m, icon, _)| {
+        *m == ms && icon.as_ref().is_none_or(|(p, st)| stamp(p) == *st)
+    }) {
+        return cached.clone();
+    }
+    let json = std::fs::read_to_string(&manifest).ok()?;
+    let mut icon_stamp = None;
+    let plugin = parse_manifest(folder, &json).map(|mut plugin| {
+        // A path icon becomes the file's contents; one that fails the checks is dropped.
+        if let Some(rel) = plugin.icon.take() {
+            plugin.icon = if rel.to_ascii_lowercase().ends_with(".svg") {
+                let file = path.join(&rel);
+                icon_stamp = Some((file.clone(), stamp(&file)));
+                svg_icon(path, &rel)
+            } else {
+                Some(rel)
+            };
+        }
+        plugin
+    });
+    if let Ok(mut m) = MANIFESTS.lock() {
+        m.get_or_insert_with(HashMap::new).insert(path.to_path_buf(), (ms, icon_stamp, plugin.clone()));
+    }
+    plugin
 }
 
 fn scan(dir: &Path) -> Vec<Plugin> {
@@ -451,20 +602,7 @@ fn scan(dir: &Path) -> Vec<Plugin> {
     let mut plugins: Vec<Plugin> = entries
         .filter_map(Result::ok)
         .filter(|e| e.path().is_dir())
-        .filter_map(|e| {
-            let folder = e.file_name().into_string().ok()?;
-            let json = std::fs::read_to_string(e.path().join("plugin.json")).ok()?;
-            let mut plugin = parse_manifest(&folder, &json)?;
-            // A path icon becomes the file's contents; one that fails the checks is dropped.
-            if let Some(rel) = plugin.icon.take() {
-                plugin.icon = if rel.to_ascii_lowercase().ends_with(".svg") {
-                    svg_icon(&e.path(), &rel)
-                } else {
-                    Some(rel)
-                };
-            }
-            Some(plugin)
-        })
+        .filter_map(|e| load_folder(&e.path(), &e.file_name().into_string().ok()?))
         .collect();
     plugins.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase()));
     plugins
@@ -478,24 +616,31 @@ pub fn list_plugins() -> Result<Vec<Plugin>, String> {
     if !dir.exists() {
         seed(&dir).map_err(|e| format!("seed plugins: {e}"))?;
     }
-    let state = load_state();
-    Ok(scan(&dir)
+    Ok(with_state(&dir, scan(&dir), &load_state()))
+}
+
+/// Plugins with the user's settings: on/off, folders, placement, approval.
+fn with_state(dir: &Path, plugins: Vec<Plugin>, state: &State) -> Vec<Plugin> {
+    plugins
         .into_iter()
-        .map(|p| Plugin {
+        .map(|p| {
+            // Only a genuine approval of the folder as it is now counts.
+            let approval = p.server.as_ref().and_then(|_| state.approval(&p.id));
+            let current = approval.as_ref().and_then(|_| plugin_trust::fingerprint_cached(&p.id, &dir.join(&p.id)).ok());
+            (p, approval, current)
+        })
+        .map(|(p, approval, current)| Plugin {
             enabled: !state.disabled.contains(&p.id),
             root: state.roots.get(&p.id).cloned(),
             cloud_root: p.permissions.iter().any(|x| x == "cloud").then(|| {
                 state.cloud_roots.get(&p.id).cloned().unwrap_or_else(|| DEFAULT_CLOUD_ROOT.to_string())
             }),
             placement: p.server.is_some().then(|| state.placement(&p.id)),
-            server_approved: p
-                .server
-                .as_ref()
-                .and_then(|s| s.local.as_ref())
-                .is_some_and(|l| state.server_approvals.get(&p.id) == Some(&plugin_backends::fingerprint(l))),
+            server_approved: approval.is_some() && approval == current,
+            approval,
             ..p
         })
-        .collect())
+        .collect()
 }
 
 fn seed(dir: &Path) -> std::io::Result<()> {
@@ -733,8 +878,10 @@ mod tests {
             cloud_root: None,
             icon: None,
             server: None,
+            server_error: None,
             placement: None,
             server_approved: false,
+            approval: None,
         });
         let p = parse_manifest("demo", r#"{"id":"demo","title":"D","description":"x","entry":"app/main.html"}"#).unwrap();
         assert_eq!(p.entry, "app/main.html");
@@ -762,6 +909,8 @@ mod tests {
         let p = parse_manifest("demo", r#"{"id":"demo","title":"D","server":{"cloud":{"instance":"plugin:demo"}}}"#).unwrap();
         assert!(p.server.unwrap().local.is_none(), "either part is optional");
         assert!(parse_manifest("demo", r#"{"id":"demo","title":"D"}"#).unwrap().server.is_none());
+        // A bad `server` keeps the plugin (its page still works) without a
+        // backend, and says why.
         for bad in [
             r#"{}"#,
             r#"{"local":{"command":[]}}"#,
@@ -770,9 +919,93 @@ mod tests {
             r#"{"cloud":{"instance":""}}"#,
             r#"{"cloud":{}}"#,
             r#""node server.js""#,
+            // H1: only its own instance
+            r#"{"cloud":{"instance":"gmail"}}"#,
+            r#"{"cloud":{"instance":"plugin:other"}}"#,
         ] {
-            assert!(parse_manifest("demo", &format!(r#"{{"id":"demo","title":"D","server":{bad}}}"#)).is_none(), "{bad}");
+            let p = parse_manifest("demo", &format!(r#"{{"id":"demo","title":"D","server":{bad}}}"#)).unwrap();
+            assert!(p.server.is_none(), "{bad}");
+            assert!(p.server_error.is_some(), "{bad}");
         }
+        let p = parse_manifest("demo", r#"{"id":"demo","title":"D","server":{"cloud":{"instance":"prod-db"}}}"#).unwrap();
+        assert_eq!(p.server_error.as_deref(), Some("server.cloud.instance must be \"plugin:demo\" (got \"prod-db\")"));
+    }
+
+    /// A plugin folder with a server, in a temp root; (root, plugin dir, state file).
+    fn server_plugin_at(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("aa-plugins-{name}-{}", uuid::Uuid::new_v4().simple()));
+        let dir = root.join("plugins/demo");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("plugin.json"), r#"{"id":"demo","title":"Demo","server":{"local":{"command":["node","s.mjs"],"env":{"TOKEN":"abc123"}},"cloud":{"instance":"plugin:demo"}}}"#).unwrap();
+        std::fs::write(dir.join("s.mjs"), "1").unwrap();
+        (root.clone(), dir, root.join("plugins-state.json"))
+    }
+
+    fn approved_in(root: &Path, state: &Path) -> bool {
+        let dir = root.join("plugins");
+        with_state(&dir, scan(&dir), &load_state_at(state))[0].server_approved
+    }
+
+    /// H2: the review shows command, cwd and env values; approving needs the
+    /// fingerprint that was shown; a later edit to any file revokes it.
+    #[test]
+    fn approvals_cover_the_folder_as_shown() {
+        let (root, dir, state) = server_plugin_at("approve");
+        let r = review(&state, "demo", &dir).unwrap();
+        assert_eq!(r.command.as_deref(), Some(&["node".to_string(), "s.mjs".to_string()][..]));
+        assert_eq!(r.env["TOKEN"], "abc123");
+        assert_eq!(r.cwd, dir.display().to_string());
+        assert_eq!(r.cloud_instance.as_deref(), Some("plugin:demo"));
+        assert_eq!(r.files, 2);
+        assert!(!r.approved);
+
+        assert!(approve(&state, "demo", &dir, true, None).is_err(), "no fingerprint, no approval");
+        // Changed between showing and clicking: refused.
+        std::fs::write(dir.join("s.mjs"), "2").unwrap();
+        let err = approve(&state, "demo", &dir, true, Some(&r.fingerprint)).unwrap_err();
+        assert!(err.contains("changed since it was shown"), "{err}");
+        assert!(!approved_in(&root, &state));
+
+        let r = review(&state, "demo", &dir).unwrap();
+        approve(&state, "demo", &dir, true, Some(&r.fingerprint)).unwrap();
+        assert!(review(&state, "demo", &dir).unwrap().approved);
+        assert!(approved_in(&root, &state));
+        let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&state).unwrap()).unwrap();
+        assert_eq!(saved["serverApprovals"]["demo"]["fingerprint"], r.fingerprint.as_str());
+        assert_eq!(saved["serverApprovals"]["demo"]["mac"].as_str().unwrap().len(), 64);
+
+        // Any file, not just plugin.json.
+        std::fs::write(dir.join("helper.mjs"), "x").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2100));
+        assert!(!approved_in(&root, &state), "a new file revokes");
+        assert!(!review(&state, "demo", &dir).unwrap().approved);
+        std::fs::remove_file(dir.join("helper.mjs")).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2100));
+        assert!(approved_in(&root, &state), "back as approved");
+
+        approve(&state, "demo", &dir, false, None).unwrap();
+        assert!(!approved_in(&root, &state), "revoked");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// H2: approvals written by anyone without the Keychain key don't count.
+    #[test]
+    fn forged_approvals_are_ignored() {
+        let (root, dir, state) = server_plugin_at("forged");
+        let fp = plugin_trust::fingerprint("demo", &dir).unwrap();
+        for forged in [
+            serde_json::json!({ "fingerprint": fp, "mac": "0".repeat(64) }),
+            serde_json::json!({ "fingerprint": fp }),
+            serde_json::json!(fp),
+            // a genuine MAC, but for another plugin
+            serde_json::json!({ "fingerprint": fp, "mac": plugin_trust::sign("other", &fp).unwrap() }),
+        ] {
+            std::fs::write(&state, serde_json::json!({ "serverApprovals": { "demo": forged } }).to_string()).unwrap();
+            assert!(!approved_in(&root, &state), "{forged}");
+        }
+        std::fs::write(&state, serde_json::json!({ "serverApprovals": { "demo": { "fingerprint": fp, "mac": plugin_trust::sign("demo", &fp).unwrap() } } }).to_string()).unwrap();
+        assert!(approved_in(&root, &state), "only a real MAC counts");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

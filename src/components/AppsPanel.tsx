@@ -30,10 +30,12 @@ import {
   listPlugins,
   setPluginEnabled,
   setPluginPlacement,
+  reviewPluginServer,
   syncBackendContext,
   usePlugins,
   type PlacementMode,
   type Plugin,
+  type ServerReview,
 } from '@/lib/plugins';
 import { pluginSection, useSidebarLayout } from '@/lib/sidebarLayout';
 import { cn } from '@/lib/utils';
@@ -618,6 +620,9 @@ export function PluginsPanel() {
       ) : plugin ? (
         <>
           {plugin.server && <BackendBar plugin={plugin} onError={setError} />}
+          {plugin.serverError && (
+            <div className="border-b border-border px-4 py-2 text-xs text-destructive">Backend not loaded: {plugin.serverError}</div>
+          )}
           <PluginFrame key={plugin.id} plugin={plugin} />
         </>
       ) : (
@@ -636,56 +641,108 @@ const PLACEMENTS: { mode: PlacementMode; label: string }[] = [
 /**
  * A plugin's MCP backend: where it should run (Auto prefers the workspace's
  * instance, then this device), where it runs now and why not, and the user's
- * yes for running its local command.
+ * approval. Nothing runs or is used before the user reviews exactly what the
+ * backend is (command, folder, env values, cloud instance) and allows that.
  */
 function BackendBar({ plugin, onError }: { plugin: Plugin; onError: (e: string) => void }) {
   const status = usePlugins((s) => s.backends[plugin.id]);
+  const [review, setReview] = useState<ServerReview | null>(null);
   const mode = plugin.placement ?? 'auto';
   const local = plugin.server?.local ?? null;
   const cloud = plugin.server?.cloud ?? null;
   const run = (f: () => Promise<void>) => void f().catch((e) => onError(errorText(e)));
+  useEffect(() => setReview(null), [plugin.id]);
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-border px-4 py-2 text-xs">
-      <span className="font-medium">Backend</span>
-      <div role="radiogroup" aria-label="Where the backend runs" className="flex rounded-md border border-border p-0.5">
-        {PLACEMENTS.map((p) => (
-          <button
-            key={p.mode}
-            type="button"
-            role="radio"
-            aria-checked={mode === p.mode}
-            disabled={(p.mode === 'local' && !local) || (p.mode === 'cloud' && !cloud)}
-            onClick={() => run(() => setPluginPlacement(plugin.id, p.mode))}
-            className={cn(
-              'rounded px-2 py-0.5 transition-colors disabled:opacity-40',
-              mode === p.mode ? 'bg-foreground text-background' : 'hover:bg-accent',
-            )}
-          >
-            {p.label}
-          </button>
-        ))}
-      </div>
-      {status && (
-        <Badge variant={status.resolved === 'unavailable' ? 'destructive' : 'secondary'} className="gap-1">
-          {status.resolved === 'cloud' ? <Cloud className="size-3" /> : status.resolved === 'local' ? <Laptop className="size-3" /> : null}
-          {status.resolved === 'cloud' ? 'Runs in the workspace' : status.resolved === 'local' ? 'Runs on this device' : 'Unavailable'}
-        </Badge>
-      )}
-      {status?.reason && <span className="min-w-0 flex-1 truncate text-muted-foreground" title={status.reason}>{status.reason}</span>}
-      {local && (
+    <div className="border-b border-border px-4 py-2 text-xs">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <span className="font-medium">Backend</span>
+        <div role="radiogroup" aria-label="Where the backend runs" className="flex rounded-md border border-border p-0.5">
+          {PLACEMENTS.map((p) => (
+            <button
+              key={p.mode}
+              type="button"
+              role="radio"
+              aria-checked={mode === p.mode}
+              disabled={(p.mode === 'local' && !local) || (p.mode === 'cloud' && !cloud)}
+              onClick={() => run(() => setPluginPlacement(plugin.id, p.mode))}
+              className={cn(
+                'rounded px-2 py-0.5 transition-colors disabled:opacity-40',
+                mode === p.mode ? 'bg-foreground text-background' : 'hover:bg-accent',
+              )}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        {status && (
+          <Badge variant={status.resolved === 'unavailable' ? 'destructive' : 'secondary'} className="gap-1">
+            {status.resolved === 'cloud' ? <Cloud className="size-3" /> : status.resolved === 'local' ? <Laptop className="size-3" /> : null}
+            {status.resolved === 'cloud' ? 'Runs in the workspace' : status.resolved === 'local' ? 'Runs on this device' : 'Unavailable'}
+          </Badge>
+        )}
+        {status?.reason && <span className="min-w-0 flex-1 truncate text-muted-foreground" title={status.reason}>{status.reason}</span>}
         <span className="ml-auto flex items-center gap-2">
-          <code className="max-w-56 truncate rounded bg-muted px-1.5 py-0.5" title={local.command.join(' ')}>
-            {local.command.join(' ')}
-          </code>
-          <Button
-            size="xs"
-            variant={plugin.serverApproved ? 'ghost' : 'default'}
-            onClick={() => run(() => approvePluginServer(plugin.id, !plugin.serverApproved))}
-            title={plugin.serverApproved ? 'Stop allowing this command to run' : 'Let the app run this command from the plugin folder'}
-          >
-            {plugin.serverApproved ? 'Revoke' : 'Allow local server'}
-          </Button>
+          {plugin.serverApproved ? (
+            <Button size="xs" variant="ghost" onClick={() => run(() => approvePluginServer(plugin.id, false))} title="Stop allowing this backend">
+              Revoke
+            </Button>
+          ) : (
+            <Button size="xs" onClick={() => run(async () => setReview(await reviewPluginServer(plugin.id)))}>
+              Review and allow…
+            </Button>
+          )}
         </span>
+      </div>
+      {review && !plugin.serverApproved && (
+        <div className="mt-2 flex flex-col gap-1.5 rounded-lg border border-border bg-muted/40 p-3">
+          <p className="text-muted-foreground">
+            Allowing lets this plugin's backend serve its page and your local agents. If any file in its folder changes later,
+            the approval lapses and you are asked again.
+          </p>
+          {review.command && (
+            <>
+              <span className="font-medium">Runs on this device, as you, without a sandbox</span>
+              <code className="whitespace-pre-wrap break-all rounded bg-background px-2 py-1">{review.command.join(' ')}</code>
+              <span>
+                in <code className="break-all">{review.cwd}</code> ({review.files} files covered)
+              </span>
+              {Object.keys(review.env).length > 0 && (
+                <>
+                  <span>with environment:</span>
+                  <code className="whitespace-pre-wrap break-all rounded bg-background px-2 py-1">
+                    {Object.entries(review.env)
+                      .map(([k, v]) => `${k}=${v}`)
+                      .join('\n')}
+                  </code>
+                </>
+              )}
+            </>
+          )}
+          {review.cloudInstance && (
+            <span>
+              Uses workspace instance <code>{review.cloudInstance}</code> with your AgentArea sign-in.
+            </span>
+          )}
+          <div className="mt-1 flex gap-2">
+            <Button
+              size="xs"
+              onClick={() =>
+                run(async () => {
+                  try {
+                    await approvePluginServer(plugin.id, true, review.fingerprint);
+                  } finally {
+                    setReview(null);
+                  }
+                })
+              }
+            >
+              Allow
+            </Button>
+            <Button size="xs" variant="ghost" onClick={() => setReview(null)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
       )}
     </div>
   );
