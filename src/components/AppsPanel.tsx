@@ -25,7 +25,16 @@ import {
   type LocalServer,
   type ServerState,
 } from '@/lib/localMcp';
-import { listPlugins, setPluginEnabled, usePlugins, type Plugin } from '@/lib/plugins';
+import {
+  approvePluginServer,
+  listPlugins,
+  setPluginEnabled,
+  setPluginPlacement,
+  syncBackendContext,
+  usePlugins,
+  type PlacementMode,
+  type Plugin,
+} from '@/lib/plugins';
 import { pluginSection, useSidebarLayout } from '@/lib/sidebarLayout';
 import { cn } from '@/lib/utils';
 import { useAppStore } from '@/store';
@@ -553,6 +562,8 @@ export function PluginsPanel() {
     setError(null);
     try {
       await usePlugins.setState({ plugins: await listPlugins() });
+      // Backends: re-read the workspace's MCP instances too.
+      void syncBackendContext();
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -605,11 +616,78 @@ export function PluginsPanel() {
       ) : plugin && !plugin.enabled ? (
         <Note title={`${plugin.title} is off`}>Switch it on in the list to open it.</Note>
       ) : plugin ? (
-        <PluginFrame key={plugin.id} plugin={plugin} />
+        <>
+          {plugin.server && <BackendBar plugin={plugin} onError={setError} />}
+          <PluginFrame key={plugin.id} plugin={plugin} />
+        </>
       ) : (
         <Note title="No plugin selected">Plugins are small local web pages that can read and message your threads.</Note>
       )}
     </ListPane>
+  );
+}
+
+const PLACEMENTS: { mode: PlacementMode; label: string }[] = [
+  { mode: 'auto', label: 'Auto' },
+  { mode: 'local', label: 'Local' },
+  { mode: 'cloud', label: 'Cloud' },
+];
+
+/**
+ * A plugin's MCP backend: where it should run (Auto prefers the workspace's
+ * instance, then this device), where it runs now and why not, and the user's
+ * yes for running its local command.
+ */
+function BackendBar({ plugin, onError }: { plugin: Plugin; onError: (e: string) => void }) {
+  const status = usePlugins((s) => s.backends[plugin.id]);
+  const mode = plugin.placement ?? 'auto';
+  const local = plugin.server?.local ?? null;
+  const cloud = plugin.server?.cloud ?? null;
+  const run = (f: () => Promise<void>) => void f().catch((e) => onError(errorText(e)));
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-b border-border px-4 py-2 text-xs">
+      <span className="font-medium">Backend</span>
+      <div role="radiogroup" aria-label="Where the backend runs" className="flex rounded-md border border-border p-0.5">
+        {PLACEMENTS.map((p) => (
+          <button
+            key={p.mode}
+            type="button"
+            role="radio"
+            aria-checked={mode === p.mode}
+            disabled={(p.mode === 'local' && !local) || (p.mode === 'cloud' && !cloud)}
+            onClick={() => run(() => setPluginPlacement(plugin.id, p.mode))}
+            className={cn(
+              'rounded px-2 py-0.5 transition-colors disabled:opacity-40',
+              mode === p.mode ? 'bg-foreground text-background' : 'hover:bg-accent',
+            )}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+      {status && (
+        <Badge variant={status.resolved === 'unavailable' ? 'destructive' : 'secondary'} className="gap-1">
+          {status.resolved === 'cloud' ? <Cloud className="size-3" /> : status.resolved === 'local' ? <Laptop className="size-3" /> : null}
+          {status.resolved === 'cloud' ? 'Runs in the workspace' : status.resolved === 'local' ? 'Runs on this device' : 'Unavailable'}
+        </Badge>
+      )}
+      {status?.reason && <span className="min-w-0 flex-1 truncate text-muted-foreground" title={status.reason}>{status.reason}</span>}
+      {local && (
+        <span className="ml-auto flex items-center gap-2">
+          <code className="max-w-56 truncate rounded bg-muted px-1.5 py-0.5" title={local.command.join(' ')}>
+            {local.command.join(' ')}
+          </code>
+          <Button
+            size="xs"
+            variant={plugin.serverApproved ? 'ghost' : 'default'}
+            onClick={() => run(() => approvePluginServer(plugin.id, !plugin.serverApproved))}
+            title={plugin.serverApproved ? 'Stop allowing this command to run' : 'Let the app run this command from the plugin folder'}
+          >
+            {plugin.serverApproved ? 'Revoke' : 'Allow local server'}
+          </Button>
+        </span>
+      )}
+    </div>
   );
 }
 

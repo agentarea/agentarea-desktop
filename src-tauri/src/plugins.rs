@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use tauri::http::{Request, Response, StatusCode};
 use tauri::{Runtime, UriSchemeContext, UriSchemeResponder};
 
+use crate::plugin_backends::{self, Mode, ServerDecl};
 use crate::web;
 
 pub const SCHEME: &str = "aa-plugin";
@@ -40,6 +41,13 @@ pub struct Plugin {
     /// Sidebar glyph: a lucide icon name ("radio-tower"), or the plugin's own
     /// monochrome SVG as a `data:` URL the app renders as a CSS mask.
     icon: Option<String>,
+    /// MCP backend (plugin_backends.rs): where it can run.
+    server: Option<ServerDecl>,
+    /// Where the user wants the backend: auto (default), local or cloud.
+    placement: Option<Mode>,
+    /// The user allowed this exact local command to run.
+    #[serde(rename = "serverApproved")]
+    server_approved: bool,
 }
 
 #[derive(Deserialize)]
@@ -52,6 +60,7 @@ struct Manifest {
     #[serde(default)]
     permissions: Vec<String>,
     icon: Option<String>,
+    server: Option<ServerDecl>,
 }
 
 /// Largest SVG icon a plugin may ship.
@@ -106,9 +115,26 @@ struct State {
     /// plugin id → workspace-files prefix (cloud permission)
     #[serde(default, rename = "cloudRoots")]
     cloud_roots: HashMap<String, String>,
+    /// plugin id → backend placement ("local" | "cloud"); absent or unknown =
+    /// auto. Plain strings, so a mode this build doesn't know can't make the
+    /// whole file unreadable.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    placements: HashMap<String, String>,
+    /// plugin id → the local server command the user allowed (fingerprint)
+    #[serde(default, rename = "serverApprovals", skip_serializing_if = "HashMap::is_empty")]
+    server_approvals: HashMap<String, String>,
 }
 
 pub const DEFAULT_CLOUD_ROOT: &str = "wiki/";
+
+impl State {
+    fn placement(&self, id: &str) -> Mode {
+        self.placements
+            .get(id)
+            .and_then(|m| serde_json::from_value(serde_json::Value::String(m.clone())).ok())
+            .unwrap_or_default()
+    }
+}
 
 fn load_state() -> State {
     state_file()
@@ -139,7 +165,69 @@ pub fn set_plugin_enabled(id: String, enabled: bool) -> Result<(), String> {
     if !enabled {
         state.disabled.push(id);
     }
-    save_state(state)
+    save_state(state)?;
+    // A disabled plugin's local server stops.
+    plugin_backends::global().reconcile();
+    Ok(())
+}
+
+/// An installed plugin that declares a server.
+fn server_plugin(id: &str) -> Result<Plugin, String> {
+    list_plugins()?
+        .into_iter()
+        .find(|p| p.id == id && p.server.is_some())
+        .ok_or_else(|| format!("plugin {id} has no backend"))
+}
+
+/// Where the plugin's backend should run: "auto", "local" or "cloud".
+#[tauri::command]
+pub fn plugin_set_placement(id: String, mode: Mode) -> Result<(), String> {
+    server_plugin(&id)?;
+    let mut state = load_state();
+    match mode {
+        Mode::Auto => state.placements.remove(&id),
+        Mode::Local => state.placements.insert(id, "local".into()),
+        Mode::Cloud => state.placements.insert(id, "cloud".into()),
+    };
+    save_state(state)?;
+    plugin_backends::global().reconcile();
+    Ok(())
+}
+
+/// Allow (or revoke) running the plugin's local server: the approval names
+/// its exact command and env, so an edited plugin.json asks again.
+#[tauri::command]
+pub fn plugin_approve_server(id: String, approve: bool) -> Result<(), String> {
+    let plugin = server_plugin(&id)?;
+    let local = plugin.server.and_then(|s| s.local).ok_or_else(|| format!("plugin {id} has no local server"))?;
+    let mut state = load_state();
+    if approve {
+        state.server_approvals.insert(id, plugin_backends::fingerprint(&local));
+    } else {
+        state.server_approvals.remove(&id);
+    }
+    save_state(state)?;
+    plugin_backends::global().reconcile();
+    Ok(())
+}
+
+/// Enabled plugins with a backend, for plugin_backends.rs.
+pub fn backend_entries() -> Vec<plugin_backends::Entry> {
+    let Ok(dir) = plugins_dir() else { return Vec::new() };
+    list_plugins()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|p| p.enabled)
+        .filter_map(|p| {
+            Some(plugin_backends::Entry {
+                dir: dir.join(&p.id),
+                decl: p.server?,
+                mode: p.placement.unwrap_or_default(),
+                approved: p.server_approved,
+                id: p.id,
+            })
+        })
+        .collect()
 }
 
 /// Grant (or with `None`, revoke) the folder an "fs" plugin may read.
@@ -337,6 +425,7 @@ fn parse_manifest(folder: &str, json: &str) -> Option<Plugin> {
         || m.title.trim().is_empty()
         || safe_relative(&entry).is_none()
         || sidebar.as_deref().is_some_and(|e| safe_relative(e).is_none())
+        || m.server.as_ref().is_some_and(|s| s.validate().is_err())
     {
         return None;
     }
@@ -351,6 +440,9 @@ fn parse_manifest(folder: &str, json: &str) -> Option<Plugin> {
         root: None,
         cloud_root: None,
         icon: m.icon.as_deref().and_then(icon_spec),
+        server: m.server,
+        placement: None,
+        server_approved: false,
     })
 }
 
@@ -395,6 +487,12 @@ pub fn list_plugins() -> Result<Vec<Plugin>, String> {
             cloud_root: p.permissions.iter().any(|x| x == "cloud").then(|| {
                 state.cloud_roots.get(&p.id).cloned().unwrap_or_else(|| DEFAULT_CLOUD_ROOT.to_string())
             }),
+            placement: p.server.is_some().then(|| state.placement(&p.id)),
+            server_approved: p
+                .server
+                .as_ref()
+                .and_then(|s| s.local.as_ref())
+                .is_some_and(|l| state.server_approvals.get(&p.id) == Some(&plugin_backends::fingerprint(l))),
             ..p
         })
         .collect())
@@ -634,6 +732,9 @@ mod tests {
             root: None,
             cloud_root: None,
             icon: None,
+            server: None,
+            placement: None,
+            server_approved: false,
         });
         let p = parse_manifest("demo", r#"{"id":"demo","title":"D","description":"x","entry":"app/main.html"}"#).unwrap();
         assert_eq!(p.entry, "app/main.html");
@@ -645,6 +746,53 @@ mod tests {
         assert!(parse_manifest("demo", r#"{"id":"demo","title":"D","entry":"/etc/passwd"}"#).is_none());
         assert!(parse_manifest("a b", r#"{"id":"a b","title":"D"}"#).is_none());
         assert!(parse_manifest("demo", "not json").is_none());
+    }
+
+    #[test]
+    fn parses_server_declarations() {
+        let p = parse_manifest(
+            "demo",
+            r#"{"id":"demo","title":"D","server":{"local":{"command":["node","server.js"],"env":{"LOG":"1"}},"cloud":{"instance":"plugin:demo"}}}"#,
+        )
+        .unwrap();
+        let server = p.server.unwrap();
+        assert_eq!(server.local.as_ref().unwrap().command, ["node", "server.js"]);
+        assert_eq!(server.local.as_ref().unwrap().env["LOG"], "1");
+        assert_eq!(server.cloud.unwrap().instance, "plugin:demo");
+        let p = parse_manifest("demo", r#"{"id":"demo","title":"D","server":{"cloud":{"instance":"plugin:demo"}}}"#).unwrap();
+        assert!(p.server.unwrap().local.is_none(), "either part is optional");
+        assert!(parse_manifest("demo", r#"{"id":"demo","title":"D"}"#).unwrap().server.is_none());
+        for bad in [
+            r#"{}"#,
+            r#"{"local":{"command":[]}}"#,
+            r#"{"local":{"command":"node server.js"}}"#,
+            r#"{"local":{"command":["node"],"env":{"BAD KEY":"x"}}}"#,
+            r#"{"cloud":{"instance":""}}"#,
+            r#"{"cloud":{}}"#,
+            r#""node server.js""#,
+        ] {
+            assert!(parse_manifest("demo", &format!(r#"{{"id":"demo","title":"D","server":{bad}}}"#)).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn state_file_stays_backward_compatible() {
+        // A file from before backends: new fields default, nothing is lost.
+        let old: State = serde_json::from_str(r#"{"disabled":["x"],"roots":{"a":"/x"},"cloudRoots":{"a":"docs/"}}"#).unwrap();
+        assert!(old.placements.is_empty() && old.server_approvals.is_empty());
+        let json = serde_json::to_string(&old).unwrap();
+        assert!(!json.contains("placements") && !json.contains("serverApprovals"), "unchanged shape: {json}");
+        let empty: State = serde_json::from_str("{}").unwrap();
+        assert!(empty.disabled.is_empty());
+
+        let new: State = serde_json::from_str(r#"{"placements":{"a":"cloud","b":"local"},"serverApprovals":{"a":"{}"}}"#).unwrap();
+        assert_eq!((new.placement("a"), new.placement("b"), new.placement("c")), (Mode::Cloud, Mode::Local, Mode::Auto));
+        let back: State = serde_json::from_str(&serde_json::to_string(&new).unwrap()).unwrap();
+        assert_eq!(back.placements, new.placements);
+        assert_eq!(back.server_approvals, new.server_approvals);
+        // A mode from a newer build reads as auto; the rest of the file survives.
+        let newer: State = serde_json::from_str(r#"{"disabled":["x"],"placements":{"a":"moon"}}"#).unwrap();
+        assert_eq!((newer.placement("a"), newer.disabled.len()), (Mode::Auto, 1));
     }
 
     #[test]

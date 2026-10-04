@@ -22,7 +22,7 @@ use serde_json::{json, Value};
 use tauri::State;
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// `npx -y` downloads the package on first start, which can take a while.
 const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(180);
 const STDERR_TAIL: usize = 4000;
@@ -288,7 +288,7 @@ fn push_tail(buf: &mut String, chunk: &str) {
 
 // ── processes ────────────────────────────────────────────────────────────────
 
-struct Server {
+pub(crate) struct Server {
     /// stdio servers only
     rpc: Option<Rpc>,
     child: Mutex<Option<Child>>,
@@ -303,7 +303,7 @@ struct Server {
 /// A server reached over HTTP: each request is a POST whose answer comes back
 /// as JSON or as an SSE stream; the session id from `initialize` (if the server
 /// hands one out) goes on every later request.
-struct Http {
+pub(crate) struct Http {
     url: String,
     headers: BTreeMap<String, String>,
     client: reqwest::Client,
@@ -312,7 +312,7 @@ struct Http {
 }
 
 impl Http {
-    fn new(url: &str, headers: &BTreeMap<String, String>) -> Result<Self, String> {
+    pub(crate) fn new(url: &str, headers: &BTreeMap<String, String>) -> Result<Self, String> {
         // reqwest needs a Tokio reactor to exist when the client is built.
         let client = tauri::async_runtime::block_on(async { reqwest::Client::builder().timeout(REQUEST_TIMEOUT).build() })
             .map_err(|e| e.to_string())?;
@@ -338,7 +338,7 @@ impl Http {
         tauri::async_runtime::block_on(async move { req.send().await }).map_err(|e| format!("{}: {e}", self.url))
     }
 
-    fn notify(&self, method: &str, params: Value) -> Result<(), String> {
+    pub(crate) fn notify(&self, method: &str, params: Value) -> Result<(), String> {
         let res = self.post(&json!({ "jsonrpc": "2.0", "method": method, "params": params }))?;
         if res.status().is_success() {
             Ok(())
@@ -347,7 +347,7 @@ impl Http {
         }
     }
 
-    fn request(&self, method: &str, params: Value) -> Reply {
+    pub(crate) fn request(&self, method: &str, params: Value) -> Reply {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let res = self.post(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))?;
         if let Some(sid) = res.headers().get("mcp-session-id").and_then(|v| v.to_str().ok()) {
@@ -401,7 +401,11 @@ impl Server {
         self.stderr.lock().map(|s| s.trim().to_string()).unwrap_or_default()
     }
 
-    fn request(&self, method: &str, params: Value, timeout: Duration) -> Reply {
+    pub(crate) fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn request(&self, method: &str, params: Value, timeout: Duration) -> Reply {
         if !self.alive.load(Ordering::SeqCst) {
             return Err(self.exit_message());
         }
@@ -459,7 +463,7 @@ impl Server {
 }
 
 /// SIGTERM everyone, give them until `grace` to leave, then SIGKILL.
-fn stop_servers(servers: &[Arc<Server>], grace: Duration) {
+pub(crate) fn stop_servers(servers: &[Arc<Server>], grace: Duration) {
     for s in servers {
         s.alive.store(false, Ordering::SeqCst);
         s.signal(15);
@@ -495,20 +499,26 @@ fn child_path(bin: &std::path::Path) -> String {
 }
 
 fn spawn(spec: &ServerSpec) -> Result<Server, String> {
-    let bin = if spec.command.contains('/') { PathBuf::from(&spec.command) } else { crate::cli_bin(&spec.command) };
     let cwd = mcp_dir()?;
     std::fs::create_dir_all(&cwd).map_err(|e| format!("mcp dir: {e}"))?;
+    spawn_in(&spec.command, &spec.args, &spec.env, &cwd)
+}
+
+/// Run `command` from `cwd`. A bare name is looked up like the agent CLIs; a
+/// relative path (`./bin/server`) is taken from `cwd`.
+fn spawn_in(command: &str, args: &[String], env: &BTreeMap<String, String>, cwd: &std::path::Path) -> Result<Server, String> {
+    let bin = if command.contains('/') { cwd.join(command) } else { crate::cli_bin(command) };
     let mut cmd = Command::new(&bin);
-    cmd.args(&spec.args)
-        .envs(&spec.env)
+    cmd.args(args)
+        .envs(env)
         .env("PATH", child_path(&bin))
-        .current_dir(&cwd)
+        .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
-    let mut child = cmd.spawn().map_err(|e| format!("failed to start {}: {e}", spec.command))?;
+    let mut child = cmd.spawn().map_err(|e| format!("failed to start {command}: {e}"))?;
 
     let stdin = child.stdin.take().expect("piped stdin");
     let stdout = child.stdout.take().expect("piped stdout");
@@ -534,7 +544,7 @@ fn spawn(spec: &ServerSpec) -> Result<Server, String> {
     Ok(Server { rpc: Some(rpc), child: Mutex::new(Some(child)), http: None, stderr: tail, alive })
 }
 
-fn initialize_params() -> Value {
+pub(crate) fn initialize_params() -> Value {
     json!({
         "protocolVersion": PROTOCOL_VERSION,
         "capabilities": {
@@ -559,6 +569,21 @@ fn start_server(spec: &ServerSpec) -> Result<(Server, Value), String> {
         },
         None => spawn(spec)?,
     };
+    initialize(server)
+}
+
+/// A stdio server run from `cwd` (a plugin backend), started and initialized;
+/// returns it with its `initialize` result.
+pub(crate) fn start_stdio(
+    command: &str,
+    args: &[String],
+    env: &BTreeMap<String, String>,
+    cwd: &std::path::Path,
+) -> Result<(Server, Value), String> {
+    initialize(spawn_in(command, args, env, cwd)?)
+}
+
+fn initialize(server: Server) -> Result<(Server, Value), String> {
     let init = server
         .request("initialize", initialize_params(), INITIALIZE_TIMEOUT)
         .and_then(|r| server.notify("notifications/initialized", json!({})).map(|_| r));

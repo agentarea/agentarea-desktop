@@ -68,12 +68,21 @@ fn token_for(cloud: &CloudAccess) -> String {
 /// The app's current token for `api_base`, else `fallback` (the one a turn got
 /// at start). Also used by the AgentArea MCP proxy (secrets_mcp.rs).
 pub fn live_token(api_base: &str, fallback: &str) -> String {
+    current_token(api_base).unwrap_or_else(|| fallback.to_string())
+}
+
+/// The app's current token for `api_base`; None when signed out (plugin
+/// backends in the cloud have no token of their own to fall back on).
+pub fn current_token(api_base: &str) -> Option<String> {
     LIVE_TOKEN
         .lock()
         .ok()
         .and_then(|live| live.as_ref().filter(|(base, _)| base == api_base).map(|(_, t)| t.clone()))
-        .unwrap_or_else(|| fallback.to_string())
 }
+
+/// Tests that set the (single, global) live token hold this.
+#[cfg(test)]
+pub(crate) static LIVE_TOKEN_TEST: Mutex<()> = Mutex::new(());
 
 /// One turn's data state; lives as long as the turn's bearer token.
 pub struct DataTurn {

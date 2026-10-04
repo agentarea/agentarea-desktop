@@ -9,8 +9,31 @@
 import { invoke } from '@tauri-apps/api/core';
 import { create } from 'zustand';
 import { useAppStore } from '@/store';
+import { listWorkspaceMcpInstances } from './api';
 import { cloudList, cloudRead, cloudRef, SIGN_IN } from './cloudFiles';
 import { cleanRoot } from './cloudPaths';
+import { config } from './config';
+
+/** Where a plugin's MCP backend should run (plugins-state.json; default auto). */
+export type PlacementMode = 'auto' | 'local' | 'cloud';
+
+/** plugin.json `server` (src-tauri/src/plugin_backends.rs); env is not sent. */
+export interface PluginServer {
+  /** a stdio MCP server started from the plugin folder */
+  local: { command: string[] } | null;
+  /** an MCP instance in the AgentArea workspace, matched by name */
+  cloud: { instance: string } | null;
+}
+
+/** A backend's placement in the active workspace. */
+export interface BackendStatus {
+  id: string;
+  mode: PlacementMode;
+  resolved: 'local' | 'cloud' | 'unavailable';
+  reason?: string;
+  /** the matched cloud instance id */
+  instance?: string;
+}
 
 export interface Plugin {
   id: string;
@@ -33,6 +56,12 @@ export interface Plugin {
   /** plugin.json `icon`: a lucide name ("radio-tower"), or the plugin's own SVG as a
    *  `data:` URL (validated and size-capped in Rust); null = initials badge */
   icon: string | null;
+  /** MCP backend, reachable at one local gateway URL wherever it runs */
+  server: PluginServer | null;
+  /** placement the user picked; null without a server */
+  placement: PlacementMode | null;
+  /** the user allowed the local server's exact command to run */
+  serverApproved: boolean;
 }
 
 /**
@@ -42,6 +71,9 @@ export interface Plugin {
 interface PluginUi {
   plugins: Plugin[];
   reload: () => Promise<void>;
+  /** backend placements for the active workspace, by plugin id */
+  backends: Record<string, BackendStatus>;
+  reloadBackends: () => Promise<void>;
   /** set by `ui.open`; the Plugins panel selects it and App switches to it */
   target: { id: string; hash: string; at: number } | null;
   open: (id: string, hash: string) => void;
@@ -52,6 +84,15 @@ export const usePlugins = create<PluginUi>((set) => ({
   reload: async () => {
     try {
       set({ plugins: await listPlugins() });
+    } catch {
+      /* not in Tauri */
+    }
+  },
+  backends: {},
+  reloadBackends: async () => {
+    try {
+      const list = await invoke<BackendStatus[]>('plugin_backend_status');
+      set({ backends: Object.fromEntries(list.map((b) => [b.id, b])) });
     } catch {
       /* not in Tauri */
     }
@@ -81,8 +122,76 @@ export function listPlugins(): Promise<Plugin[]> {
 
 export async function setPluginEnabled(id: string, enabled: boolean): Promise<void> {
   await invoke('set_plugin_enabled', { id, enabled });
-  void usePlugins.getState().reload();
+  await usePlugins.getState().reload();
+  void usePlugins.getState().reloadBackends();
 }
+
+export async function setPluginPlacement(id: string, mode: PlacementMode): Promise<void> {
+  await invoke('plugin_set_placement', { id, mode });
+  await usePlugins.getState().reload();
+  void usePlugins.getState().reloadBackends();
+}
+
+/** Allow (or revoke) running the plugin's local server command. */
+export async function approvePluginServer(id: string, approve: boolean): Promise<void> {
+  await invoke('plugin_approve_server', { id, approve });
+  await usePlugins.getState().reload();
+  void usePlugins.getState().reloadBackends();
+}
+
+/**
+ * Tell Rust which workspace is active — env, slug, API base and its MCP
+ * instances — so plugin backends resolve their placement against it. The
+ * token is not sent: Rust reads the live one (session.ts keeps it fresh).
+ * Runs on start and whenever the sign-in or workspace changes.
+ */
+let syncSeq = 0;
+export async function syncBackendContext(): Promise<void> {
+  const seq = ++syncSeq;
+  const s = useAppStore.getState();
+  const ws = s.workspaces.find((w) => w.id === s.workspaceId) ?? null;
+  const signedIn = s.auth.status === 'authenticated';
+  let instances: { id: string; name: string }[] | null = null;
+  let error: string | null = null;
+  if (signedIn && ws) {
+    try {
+      instances = await listWorkspaceMcpInstances(ws.slug);
+    } catch (e) {
+      error = `couldn't list the workspace's MCP instances: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  } else if (signedIn) {
+    error = 'no AgentArea workspace selected yet';
+  }
+  if (seq !== syncSeq) return; // a newer sync is on its way
+  try {
+    await invoke('plugin_backends_set_context', {
+      env: s.env.id,
+      slug: ws?.slug ?? null,
+      apiBase: config.apiBaseUrl,
+      instances,
+      error,
+    });
+  } catch {
+    return; // not in Tauri
+  }
+  await usePlugins.getState().reloadBackends();
+}
+
+let syncTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleSync() {
+  if (syncTimer) clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => void syncBackendContext(), 200);
+}
+
+// After this module's importers finish loading (the store may not exist yet).
+queueMicrotask(() => {
+  scheduleSync();
+  useAppStore.subscribe((s, prev) => {
+    if (s.env !== prev.env || s.auth.status !== prev.auth.status || s.workspaceId !== prev.workspaceId || s.workspaces !== prev.workspaces) {
+      scheduleSync();
+    }
+  });
+});
 
 export function isBridgeRequest(data: unknown): data is BridgeRequest {
   if (typeof data !== 'object' || data === null) return false;
@@ -112,6 +221,16 @@ async function requireState(pluginId: string): Promise<void> {
   };
   if (!ok()) await usePlugins.getState().reload();
   if (!ok()) throw new Error(`plugin ${pluginId} has no "state" permission`);
+}
+
+/** Throws unless the plugin is enabled and declares a server: it reaches only its own backend. */
+async function requireServer(pluginId: string): Promise<void> {
+  const ok = () => {
+    const p = usePlugins.getState().plugins.find((x) => x.id === pluginId);
+    return !!p?.enabled && !!p.server;
+  };
+  if (!ok()) await usePlugins.getState().reload();
+  if (!ok()) throw new Error(`plugin ${pluginId} has no backend`);
 }
 
 /** The plugin's cloud root, if it is enabled and declared "cloud". */
@@ -240,6 +359,27 @@ export async function runBridgeMethod(pluginId: string, method: string, params: 
       if (!threadId) throw new Error('No open thread');
       store.referenceFiles(threadId, [ref]);
       return { ok: true, threadId, ref };
+    }
+
+    // ── plugin: the plugin's own MCP backend (local or cloud, one gateway in Rust).
+    // The id is always the calling plugin's; there is no way to name another.
+    case 'plugin.placement': {
+      await requireServer(pluginId);
+      await usePlugins.getState().reloadBackends();
+      const b = usePlugins.getState().backends[pluginId];
+      if (!b) throw new Error(`plugin ${pluginId} has no backend`);
+      return { mode: b.mode, resolved: b.resolved, ...(b.reason ? { reason: b.reason } : {}) };
+    }
+
+    case 'plugin.tools':
+      await requireServer(pluginId);
+      return invoke('plugin_backend_tools', { id: pluginId });
+
+    case 'plugin.call': {
+      await requireServer(pluginId);
+      const args = param(params, 'arguments') ?? param(params, 'args') ?? {};
+      if (typeof args !== 'object' || args === null || Array.isArray(args)) throw new Error('"arguments" must be an object');
+      return invoke('plugin_backend_call', { id: pluginId, name: str(params, 'name'), arguments: args });
     }
 
     // ── ui

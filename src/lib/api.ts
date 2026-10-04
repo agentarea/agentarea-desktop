@@ -82,6 +82,16 @@ function toCatalogItem(x: any): CatalogItem {
   return { id: String(x.id), name: x.name ?? x.display_name ?? String(x.id), description: x.description ?? undefined };
 }
 
+/**
+ * GET /v1/workspaces/{slug}/mcp-server-instances/ — id and name of every MCP
+ * instance in that workspace (plugin backends match `server.cloud.instance`
+ * against the name).
+ */
+export async function listWorkspaceMcpInstances(slug: string): Promise<{ id: string; name: string }[]> {
+  const raw = items(await (await apiFetch(`/v1/workspaces/${encodeURIComponent(slug)}/mcp-server-instances/`)).json());
+  return raw.map((i: any) => ({ id: String(i.id), name: String(i.name ?? '') }));
+}
+
 /** GET /v1/agents/ — the cloud agents a session can delegate to. */
 export async function listAgents(): Promise<CatalogItem[]> {
   return items(await (await apiFetch('/v1/agents/')).json()).map(toCatalogItem);
