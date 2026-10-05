@@ -13,6 +13,21 @@ export function setWorkspaceRef(ref: string | null) {
 export function getWorkspaceRef(): string | null {
   return workspaceRef;
 }
+
+/** Workspace id → slug, from the last listWorkspaces(); the API addresses workspaces by slug. */
+const slugs = new Map<string, string>();
+
+/**
+ * The API names the workspace in the path only (`/v1/workspaces/{slug}/...`;
+ * the old X-AgentArea-Workspace header is retired and ignored). Every `/v1/...`
+ * call except the workspace list itself is scoped to the active workspace.
+ */
+function scoped(path: string): string {
+  if (!workspaceRef || !path.startsWith('/v1/') || path === '/v1/workspaces' || path.startsWith('/v1/workspaces/') || path.startsWith('/v1/workspaces?'))
+    return path;
+  const slug = slugs.get(workspaceRef) ?? workspaceRef;
+  return `/v1/workspaces/${encodeURIComponent(slug)}${path.slice(3)}`;
+}
 import type { CatalogItem } from '../data';
 
 async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
@@ -34,16 +49,13 @@ export async function apiRequest(path: string, init?: RequestInit): Promise<Resp
 
 async function send(path: string, init: RequestInit | undefined, token: string | null): Promise<Response> {
   const { fetch } = await import('@tauri-apps/plugin-http');
-  if (import.meta.env.DEV) console.debug(`[api] ${init?.method ?? 'GET'} ${path} workspace=${workspaceRef ?? '(default)'}`);
-  return fetch(`${config.apiBaseUrl}${path}`, {
+  if (import.meta.env.DEV) console.debug(`[api] ${init?.method ?? 'GET'} ${scoped(path)}`);
+  return fetch(`${config.apiBaseUrl}${scoped(path)}`, {
     ...init,
     headers: {
       ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
       ...(init?.headers ?? {}),
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      // The API picks the workspace from this header (id or slug) and checks membership.
-      // (In dev, every request logs which workspace it asked for.)
-      ...(workspaceRef ? { 'X-AgentArea-Workspace': workspaceRef } : {}),
     },
   });
 }
@@ -57,7 +69,9 @@ export interface Workspace {
 /** GET /v1/workspaces — every workspace (org) the user belongs to. */
 export async function listWorkspaces(): Promise<Workspace[]> {
   const raw: any[] = await (await apiFetch('/v1/workspaces')).json();
-  return raw.map((w) => ({ id: String(w.id), slug: String(w.slug ?? w.id), name: String(w.name ?? w.slug ?? w.id) }));
+  const list = raw.map((w) => ({ id: String(w.id), slug: String(w.slug ?? w.id), name: String(w.name ?? w.slug ?? w.id) }));
+  for (const w of list) slugs.set(w.id, w.slug);
+  return list;
 }
 
 function items(raw: any): any[] {
@@ -216,7 +230,11 @@ async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
 
 /** GET /v1/mcp-apps/ */
 export async function listMcpApps(): Promise<McpApp[]> {
-  const apps = await apiJson<McpApp[]>('/v1/mcp-apps/');
+  // Servers without the MCP Apps endpoint (agentarea.ru today) simply have no cloud apps.
+  const res = await apiRequest('/v1/mcp-apps/');
+  if (res.status === 404) return [];
+  if (!res.ok) throw new Error(`GET /v1/mcp-apps/ failed (${res.status})`);
+  const apps: McpApp[] = await res.json();
   return apps.map((a) => ({ ...a, instance_id: String(a.instance_id) }));
 }
 

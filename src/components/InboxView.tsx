@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { Check, X, Cloud, AlertTriangle, MessageSquare, HelpCircle, ShieldQuestion, CircleCheck } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useAppStore } from '@/store';
+import { getAccessToken } from '@/lib/session';
 import { localInbox } from '@/lib/inbox';
 import type { CloudInboxItem } from '@/lib/api';
 import { RunnerBadge } from '@/assets/icons';
@@ -20,7 +21,10 @@ export function InboxView({ onOpenThread }: { onOpenThread: (id: string) => void
   const running = useAppStore((s) => s.running);
   const approvals = useAppStore((s) => s.approvals);
   const cloud = useAppStore((s) => s.cloudInbox);
-  const connected = useAppStore((s) => s.connection === 'connected');
+  const connection = useAppStore((s) => s.connection);
+  const connected = connection === 'connected';
+  const connect = useAppStore((s) => s.connect);
+  const logout = useAppStore((s) => s.logout);
   const openCloudTask = useAppStore((s) => s.openCloudTask);
   const [showCompleted, setShowCompleted] = useState(false);
 
@@ -67,7 +71,28 @@ export function InboxView({ onOpenThread }: { onOpenThread: (id: string) => void
         )}
 
         <Section title="AgentArea" count={cloudShown.length} icon={<Cloud className="size-3.5" />}>
-          {!connected && <p className="px-3 py-2 text-[12.5px] text-muted-foreground">Sign in to see your workspace’s tasks.</p>}
+          {!connected && (
+            <p className="px-3 py-2 text-[12.5px] text-muted-foreground">
+              {connection === 'connecting' ? (
+                'Connecting to your workspace…'
+              ) : getAccessToken() ? (
+                <>
+                  Not connected to your workspace.{' '}
+                  <button className="underline underline-offset-2 hover:text-foreground" onClick={() => void connect()}>
+                    Reconnect
+                  </button>
+                </>
+              ) : (
+                <>
+                  Sign in to see your workspace’s tasks.{' '}
+                  {/* No saved session (e.g. "Skip (dev preview)"): back to the sign-in screen. */}
+                  <button className="underline underline-offset-2 hover:text-foreground" onClick={logout}>
+                    Sign in
+                  </button>
+                </>
+              )}
+            </p>
+          )}
           {connected && cloudShown.length === 0 && (
             <p className="px-3 py-2 text-[12.5px] text-muted-foreground">No cloud tasks need you.</p>
           )}

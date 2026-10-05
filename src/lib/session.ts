@@ -65,16 +65,30 @@ export async function setSession(s: Session) {
   );
 }
 
-/** The saved session for the current environment, if any. */
+/** The keychain refused to hand back the saved session (denied, cancelled, locked). */
+export class KeychainError extends Error {}
+
+/**
+ * The saved session for the current environment, if any. A keychain failure
+ * throws KeychainError instead of looking like "never signed in", so the UI
+ * can say why and offer a retry; a missing or unreadable entry is just null.
+ */
 export async function restoreSession(): Promise<Session | null> {
+  let raw: string | null = null;
+  let failure: unknown = null;
   try {
-    const raw = await invoke<string | null>('token_load', { key: key() });
+    raw = await invoke<string | null>('token_load', { key: key() });
+  } catch (e) {
+    failure = e;
+  }
+  try {
     current = raw ? (JSON.parse(raw) as Session) : null;
   } catch {
     current = null;
   }
   shareToken();
   scheduleRenewal();
+  if (failure !== null) throw new KeychainError(String(failure));
   return current;
 }
 

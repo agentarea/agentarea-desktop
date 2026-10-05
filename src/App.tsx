@@ -995,6 +995,8 @@ function AccountMenu() {
   const logout = useAppStore((s) => s.logout);
   const email = useAppStore((s) => s.auth.user?.email);
   const status = useAppStore((s) => s.connection);
+  const connectionError = useAppStore((s) => s.connectionError);
+  const connect = useAppStore((s) => s.connect);
   const envLabel = useAppStore((s) => s.env.label);
   const conn = CONNECTION[status];
   const problem = status !== 'connected';
@@ -1021,6 +1023,17 @@ function AccountMenu() {
               {envLabel} · {conn.label}
             </span>
           </span>
+          {status === 'offline' && connectionError && (
+            <span className="text-[11px] break-words text-destructive">{connectionError}</span>
+          )}
+          {status === 'offline' && (
+            <button
+              className="self-start text-[11.5px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+              onClick={() => void connect()}
+            >
+              Reconnect
+            </button>
+          )}
         </div>
         <DropdownMenuSeparator />
         {/* Stays open: the flip is the feedback. */}

@@ -13,6 +13,7 @@ import {
   dropSession,
   freshAccessToken,
   onSessionExpired,
+  KeychainError,
 } from './lib/session';
 import {
   listAgents,
@@ -64,9 +65,13 @@ interface AppState {
   login: () => Promise<void>;
   logout: () => void;
   devComplete: () => void;
+  /** Read the saved sign-in from the keychain again (after a denied or cancelled prompt). */
+  retrySignIn: () => void;
 
   // Control plane
   connection: ConnectionStatus;
+  /** why the last connect failed, shown next to "Offline" */
+  connectionError: string | null;
   mcps: CatalogItem[];
   skills: CatalogItem[];
   agents: CatalogItem[];
@@ -184,6 +189,14 @@ function serial(key: string, job: () => Promise<void>): Promise<void> {
   return next;
 }
 
+/** What to tell the user when the keychain won't give back the saved sign-in. */
+function keychainHint(detail: string): string {
+  const cancelled = /cancel|denied|-128|-25293/i.test(detail);
+  return cancelled
+    ? 'macOS Keychain access was cancelled, so your saved sign-in could not be read. Click "Try again" and choose "Always Allow" for AgentArea Desktop.'
+    : `Could not read your saved sign-in from the macOS Keychain (${detail}). Click "Try again" or sign in.`;
+}
+
 export const useAppStore = create<AppState>((set, get) => {
   const patch = (id: string, fn: (s: Session) => Partial<Session>) => {
     const sessions = get().sessions.map((s) => (s.id === id ? { ...s, ...fn(s) } : s));
@@ -243,7 +256,14 @@ export const useAppStore = create<AppState>((set, get) => {
   // a refresh token outlives restarts, so the user isn't asked to log in again.
   const restore = async () => {
     set({ auth: { status: 'authenticating', user: null, error: null } });
-    const saved = await restoreSession();
+    let saved: Awaited<ReturnType<typeof restoreSession>>;
+    try {
+      saved = await restoreSession();
+    } catch (e) {
+      const why = e instanceof KeychainError ? keychainHint(e.message) : String(e);
+      set({ auth: { status: 'unauthenticated', user: null, error: why } });
+      return;
+    }
     if (!saved || !(await freshAccessToken())) {
       set({ auth: { status: 'unauthenticated', user: null, error: null } });
       return;
@@ -393,6 +413,8 @@ export const useAppStore = create<AppState>((set, get) => {
       });
     },
 
+    retrySignIn: () => void restore(),
+
     devComplete: () => {
       set({ auth: { status: 'authenticated', user: { email: 'you@agentarea.dev' }, error: null } });
       void get().connect();
@@ -403,6 +425,7 @@ export const useAppStore = create<AppState>((set, get) => {
     skills: [],
     agents: [],
 
+    connectionError: null,
     connect: async () => {
       set({ connection: 'connecting' });
       try {
@@ -416,10 +439,12 @@ export const useAppStore = create<AppState>((set, get) => {
         }
         set({ workspaces, workspaceId: keep?.id ?? null });
         const [mcps, skills, agents] = await Promise.all([listMcpInstances(), listSkills(), listAgents()]);
-        set({ connection: 'connected', mcps, skills, agents });
+        set({ connection: 'connected', connectionError: null, mcps, skills, agents });
         void get().loadInbox();
-      } catch {
-        set({ connection: 'offline' });
+      } catch (e) {
+        const why = e instanceof Error ? e.message : String(e);
+        console.warn('connect failed:', why);
+        set({ connection: 'offline', connectionError: why });
       }
     },
 
