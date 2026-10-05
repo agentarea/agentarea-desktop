@@ -1,7 +1,19 @@
 //! Secrets the user keeps for agents (API keys and the like). Values live in the
-//! OS keychain — service "AgentArea Desktop Secrets", one entry per secret id —
-//! and `~/AgentArea/secrets.json` holds only metadata: name, description, the
-//! hosts a secret may be sent to, timestamps. Never a value.
+//! OS keychain and `~/AgentArea/secrets.json` holds only metadata: name,
+//! description, the hosts a secret may be sent to, timestamps. Never a value.
+//!
+//! Keychain layout: one item, service "AgentArea Desktop Secrets", account
+//! `vault.v2`, whose value is a JSON object `{secret_id: value}`. It is read
+//! once per process and kept in memory, so the OS asks for access at most once
+//! per launch instead of once per secret per turn; every change rewrites the
+//! whole item and only then updates the in-memory copy. A failed or denied read
+//! is not remembered, so the next call asks again.
+//!
+//! Older versions kept one item per secret id (account = id). When `vault.v2`
+//! is missing, or lacks a secret listed in secrets.json, the value is copied
+//! from that legacy item and `vault.v2` is written. Legacy items are left in
+//! place (only deleting a secret removes its legacy item); nothing new is
+//! written to them.
 //!
 //! Nothing here hands a value back to the webview. Agents reach a secret only
 //! through a one-time handle (secrets_mcp.rs), and `Redactor` swaps known values
@@ -9,14 +21,19 @@
 //!
 //! Separate from secrets.rs, which holds the sign-in session.
 
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 const SERVICE: &str = "AgentArea Desktop Secrets";
+/// The keychain account holding every value as one JSON object. Secret ids are
+/// alphanumeric and `-`, so it can't clash with a legacy per-id account.
+const BLOB_ACCOUNT: &str = "vault.v2";
+const DENIED: &str = "Keychain access was denied — allow AgentArea Desktop in the macOS prompt (Always Allow) and try again";
 /// Shorter values are left alone by the redactor: swapping every "1234" would
 /// mangle ordinary text and code.
 pub const MIN_REDACT_LEN: usize = 6;
@@ -130,26 +147,146 @@ pub fn parse_secrets(json: &str) -> Result<Vec<SecretMeta>, String> {
 /// secrets.json is read-modify-written by UI commands and the MCP server.
 static FILE_LOCK: Mutex<()> = Mutex::new(());
 
+/// Decoded `vault.v2` items by keychain service, filled on first use. The lock
+/// is held across keychain calls, so concurrent first reads wait for one
+/// prompt instead of raising several.
+static CACHE: Mutex<Option<HashMap<String, BTreeMap<String, String>>>> = Mutex::new(None);
+
+/// Where keychain items are read and written: the OS keychain in the app, an
+/// in-memory map in tests. Errors are ready to show the user.
+pub trait Store: Send + Sync + std::fmt::Debug {
+    /// `None` when there is no such item.
+    fn get(&self, service: &str, account: &str) -> Result<Option<String>, String>;
+    fn set(&self, service: &str, account: &str, value: &str) -> Result<(), String>;
+    /// A missing item is not an error.
+    fn delete(&self, service: &str, account: &str) -> Result<(), String>;
+}
+
+#[derive(Debug)]
+struct Keychain;
+
+/// Cancelled (-128) or refused (-25293) by the user at the macOS prompt.
+fn is_denied(detail: &str) -> bool {
+    ["code: -128", "code: -25293", "User canceled", "denied"].iter().any(|s| detail.contains(s))
+}
+
+fn keychain_error(e: keyring::Error) -> String {
+    let detail = match &e {
+        keyring::Error::PlatformFailure(inner) | keyring::Error::NoStorageAccess(inner) => format!("{inner:?} {inner}"),
+        _ => String::new(),
+    };
+    if is_denied(&detail) {
+        DENIED.into()
+    } else {
+        format!("keychain: {e}")
+    }
+}
+
+impl Store for Keychain {
+    fn get(&self, service: &str, account: &str) -> Result<Option<String>, String> {
+        match keyring::Entry::new(service, account).map_err(keychain_error)?.get_password() {
+            Ok(v) => Ok(Some(v)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(keychain_error(e)),
+        }
+    }
+
+    fn set(&self, service: &str, account: &str, value: &str) -> Result<(), String> {
+        keyring::Entry::new(service, account).map_err(keychain_error)?.set_password(value).map_err(keychain_error)
+    }
+
+    fn delete(&self, service: &str, account: &str) -> Result<(), String> {
+        match keyring::Entry::new(service, account).map_err(keychain_error)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(keychain_error(e)),
+        }
+    }
+}
+
 /// Where secrets live. Tests point it at a temp dir and a test keychain service.
 #[derive(Clone, Debug)]
 pub struct Vault {
     dir: PathBuf,
     service: String,
+    store: Arc<dyn Store>,
 }
 
 impl Vault {
     pub fn user() -> Result<Vault, String> {
         let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
-        Ok(Vault { dir: PathBuf::from(home).join("AgentArea"), service: SERVICE.into() })
+        Ok(Vault { dir: PathBuf::from(home).join("AgentArea"), service: SERVICE.into(), store: Arc::new(Keychain) })
     }
 
     #[cfg(test)]
     pub fn at(dir: PathBuf, service: &str) -> Vault {
-        Vault { dir, service: service.into() }
+        Vault { dir, service: service.into(), store: Arc::new(Keychain) }
     }
 
-    fn entry(&self, id: &str) -> Result<keyring::Entry, String> {
-        keyring::Entry::new(&self.service, id).map_err(|e| e.to_string())
+    /// The in-memory cache is per service, so each test needs its own.
+    #[cfg(test)]
+    pub fn with_store(dir: PathBuf, service: &str, store: Arc<dyn Store>) -> Vault {
+        Vault { dir, service: service.into(), store }
+    }
+
+    /// The value map from the keychain, plus any secret listed in secrets.json
+    /// that only has a legacy per-id item. `vault.v2` is (re)written when it
+    /// was missing or gained values; an error leaves nothing behind but the
+    /// legacy items, so an interrupted migration simply runs again.
+    fn load(&self) -> Result<BTreeMap<String, String>, String> {
+        let stored = self.store.get(&self.service, BLOB_ACCOUNT)?;
+        let missing = stored.is_none();
+        let mut values: BTreeMap<String, String> = match stored {
+            Some(json) => serde_json::from_str(&json).map_err(|e| format!("keychain: {BLOB_ACCOUNT} is not valid JSON: {e}"))?,
+            None => BTreeMap::new(),
+        };
+        let mut gained = false;
+        for meta in self.list()? {
+            if values.contains_key(&meta.id) {
+                continue;
+            }
+            if let Some(v) = self.store.get(&self.service, &meta.id)? {
+                values.insert(meta.id, v);
+                gained = true;
+            }
+        }
+        if missing || gained {
+            self.write(&values)?;
+        }
+        Ok(values)
+    }
+
+    fn write(&self, values: &BTreeMap<String, String>) -> Result<(), String> {
+        let json = serde_json::to_string(values).map_err(|e| e.to_string())?;
+        self.store.set(&self.service, BLOB_ACCOUNT, &json)
+    }
+
+    /// This vault's cached values, loaded first if need be.
+    fn cached<'a>(
+        &self,
+        cache: &'a mut Option<HashMap<String, BTreeMap<String, String>>>,
+    ) -> Result<&'a mut BTreeMap<String, String>, String> {
+        use std::collections::hash_map::Entry;
+        Ok(match cache.get_or_insert_with(HashMap::new).entry(self.service.clone()) {
+            Entry::Occupied(e) => e.into_mut(),
+            Entry::Vacant(e) => e.insert(self.load()?),
+        })
+    }
+
+    fn with_values<T>(&self, f: impl FnOnce(&BTreeMap<String, String>) -> T) -> Result<T, String> {
+        let mut cache = CACHE.lock().map_err(|_| "vault cache poisoned")?;
+        Ok(f(self.cached(&mut cache)?))
+    }
+
+    /// Change the values: the keychain is written first and the cache follows
+    /// only if that worked.
+    fn change_values(&self, f: impl FnOnce(&mut BTreeMap<String, String>)) -> Result<(), String> {
+        let mut cache = CACHE.lock().map_err(|_| "vault cache poisoned")?;
+        let values = self.cached(&mut cache)?;
+        let mut next = values.clone();
+        f(&mut next);
+        self.write(&next)?;
+        *values = next;
+        Ok(())
     }
 
     pub fn list(&self) -> Result<Vec<SecretMeta>, String> {
@@ -202,8 +339,10 @@ impl Vault {
                 return Err(format!("a secret named {} already exists", meta.name));
             }
             // Keychain first: a listed secret without a value is worse than a
-            // stray keychain entry.
-            self.entry(&meta.id)?.set_password(&value).map_err(|e| format!("keychain: {e}"))?;
+            // stray keychain value.
+            self.change_values(|values| {
+                values.insert(meta.id.clone(), value);
+            })?;
             secrets.push(meta.clone());
             Ok(meta.clone())
         })
@@ -224,8 +363,10 @@ impl Vault {
         }
         self.edit(|secrets| {
             let s = secrets.iter_mut().find(|s| s.id == id).ok_or_else(|| format!("no secret with id {id}"))?;
-            if let Some(v) = &value {
-                self.entry(&s.id)?.set_password(v).map_err(|e| format!("keychain: {e}"))?;
+            if let Some(v) = value {
+                self.change_values(|values| {
+                    values.insert(s.id.clone(), v);
+                })?;
             }
             if let Some(d) = description {
                 s.description = d;
@@ -240,31 +381,31 @@ impl Vault {
     pub fn delete(&self, id: &str) -> Result<(), String> {
         self.edit(|secrets| {
             secrets.retain(|s| s.id != id);
-            match self.entry(id)?.delete_credential() {
-                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-                Err(e) => Err(format!("keychain: {e}")),
-            }
+            self.change_values(|values| {
+                values.remove(id);
+            })?;
+            // Best effort: an unlisted id is never read back from its legacy item.
+            let _ = self.store.delete(&self.service, id);
+            Ok(())
         })
     }
 
-    /// The value, or `None` if its keychain entry is gone.
+    /// The value, or `None` if the keychain has none for it.
+    #[allow(dead_code)] // kept for callers; the app itself uses `values`
     pub fn value(&self, id: &str) -> Result<Option<String>, String> {
-        match self.entry(id)?.get_password() {
-            Ok(v) => Ok(Some(v)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(format!("keychain: {e}")),
-        }
+        self.with_values(|values| values.get(id).cloned())
     }
 
     /// Every secret that has a value, with it — for redaction and exchange only.
+    /// An empty vault never touches the keychain.
     pub fn values(&self) -> Result<Vec<(SecretMeta, String)>, String> {
-        let mut out = Vec::new();
-        for meta in self.list()? {
-            if let Some(v) = self.value(&meta.id)? {
-                out.push((meta, v));
-            }
+        let metas = self.list()?;
+        if metas.is_empty() {
+            return Ok(Vec::new());
         }
-        Ok(out)
+        self.with_values(|values| {
+            metas.into_iter().filter_map(|meta| values.get(&meta.id).cloned().map(|v| (meta, v))).collect()
+        })
     }
 
     /// Record a successful exchange.
@@ -461,6 +602,221 @@ mod tests {
         assert_eq!(Redactor::default().redact("unchanged"), "unchanged");
     }
 
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    /// Keychain stand-in that counts reads and can refuse them.
+    #[derive(Debug, Default)]
+    struct MemStore {
+        items: Mutex<HashMap<(String, String), String>>,
+        reads: AtomicUsize,
+        deny: AtomicBool,
+        fail_writes: AtomicBool,
+    }
+
+    impl Store for MemStore {
+        fn get(&self, service: &str, account: &str) -> Result<Option<String>, String> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            if self.deny.load(Ordering::SeqCst) {
+                return Err(DENIED.into());
+            }
+            Ok(self.items.lock().unwrap().get(&(service.into(), account.into())).cloned())
+        }
+        fn set(&self, service: &str, account: &str, value: &str) -> Result<(), String> {
+            if self.fail_writes.load(Ordering::SeqCst) {
+                return Err("keychain: write failed".into());
+            }
+            self.items.lock().unwrap().insert((service.into(), account.into()), value.into());
+            Ok(())
+        }
+        fn delete(&self, service: &str, account: &str) -> Result<(), String> {
+            self.items.lock().unwrap().remove(&(service.to_string(), account.to_string()));
+            Ok(())
+        }
+    }
+
+    impl MemStore {
+        fn item(&self, service: &str, account: &str) -> Option<String> {
+            self.items.lock().unwrap().get(&(service.into(), account.into())).cloned()
+        }
+        fn put(&self, service: &str, account: &str, value: &str) {
+            self.items.lock().unwrap().insert((service.into(), account.into()), value.into());
+        }
+        fn blob(&self, service: &str) -> BTreeMap<String, String> {
+            serde_json::from_str(&self.item(service, BLOB_ACCOUNT).expect("vault.v2 written")).unwrap()
+        }
+    }
+
+    /// A vault on a fresh dir, fresh in-memory store and its own service (the
+    /// cache is per service).
+    fn mem_vault() -> (Vault, Arc<MemStore>, String, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("aa-vault-mem-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let service = format!("test-{}", uuid::Uuid::new_v4().simple());
+        let store = Arc::new(MemStore::default());
+        (Vault::with_store(dir.clone(), &service, store.clone()), store, service, dir)
+    }
+
+    fn write_meta(dir: &std::path::Path, entries: &[(&str, &str)]) {
+        let json: Vec<_> =
+            entries.iter().map(|(id, name)| serde_json::json!({"id": id, "name": name, "createdAt": 1})).collect();
+        std::fs::write(dir.join("secrets.json"), serde_json::to_string(&json).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn migrates_legacy_items_once() {
+        let (v, store, service, dir) = mem_vault();
+        write_meta(&dir, &[("a1", "ALPHA_KEY"), ("b2", "BETA_KEY"), ("c3", "GONE_KEY")]);
+        store.put(&service, "a1", "alpha-value");
+        store.put(&service, "b2", "beta-value");
+        store.put(&service, "zz", "unlisted-value");
+
+        let vals = v.values().unwrap();
+        assert_eq!(
+            vals.iter().map(|(m, v)| (m.name.as_str(), v.as_str())).collect::<Vec<_>>(),
+            [("ALPHA_KEY", "alpha-value"), ("BETA_KEY", "beta-value")],
+            "missing legacy item is just absent"
+        );
+        let blob = store.blob(&service);
+        assert_eq!(blob.len(), 2, "unlisted legacy items are not pulled in");
+        assert_eq!(blob["a1"], "alpha-value");
+        assert_eq!(store.item(&service, "a1").as_deref(), Some("alpha-value"), "legacy items stay");
+
+        // A second process: the blob exists, so only the still-missing id is
+        // looked up again.
+        CACHE.lock().unwrap().as_mut().unwrap().remove(&service);
+        store.reads.store(0, Ordering::SeqCst);
+        assert_eq!(v.values().unwrap().len(), 2);
+        assert_eq!(store.reads.load(Ordering::SeqCst), 2, "vault.v2 + the one id it lacks");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn heals_a_secret_only_in_a_legacy_item() {
+        let (v, store, service, dir) = mem_vault();
+        write_meta(&dir, &[("a1", "ALPHA_KEY"), ("b2", "BETA_KEY")]);
+        store.put(&service, BLOB_ACCOUNT, r#"{"a1":"alpha-value"}"#);
+        store.put(&service, "b2", "beta-from-older-build");
+        assert_eq!(v.value("b2").unwrap().as_deref(), Some("beta-from-older-build"));
+        assert_eq!(store.blob(&service).len(), 2);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn interrupted_migration_runs_again() {
+        let (v, store, service, dir) = mem_vault();
+        write_meta(&dir, &[("a1", "ALPHA_KEY")]);
+        store.put(&service, "a1", "alpha-value");
+        store.fail_writes.store(true, Ordering::SeqCst);
+        assert!(v.values().is_err(), "can't write vault.v2");
+        assert!(store.item(&service, BLOB_ACCOUNT).is_none());
+        store.fail_writes.store(false, Ordering::SeqCst);
+        assert_eq!(v.values().unwrap()[0].1, "alpha-value");
+        assert_eq!(store.blob(&service)["a1"], "alpha-value");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cache_hit_skips_the_store() {
+        let (v, store, _service, dir) = mem_vault();
+        let s = v.create("CACHED_KEY".into(), None, vec![], "cached-value".into()).unwrap();
+        let after_create = store.reads.load(Ordering::SeqCst);
+        for _ in 0..5 {
+            assert_eq!(v.values().unwrap()[0].1, "cached-value");
+            assert_eq!(v.value(&s.id).unwrap().as_deref(), Some("cached-value"));
+        }
+        assert_eq!(store.reads.load(Ordering::SeqCst), after_create, "no keychain reads after the first load");
+        // A clone (as the MCP server holds) shares the cache.
+        assert_eq!(v.clone().value(&s.id).unwrap().as_deref(), Some("cached-value"));
+        assert_eq!(store.reads.load(Ordering::SeqCst), after_create);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn create_update_delete_round_trip() {
+        let (v, store, service, dir) = mem_vault();
+        assert!(v.values().unwrap().is_empty());
+        assert_eq!(store.reads.load(Ordering::SeqCst), 0, "an empty vault never asks the keychain");
+
+        let a = v.create("A_KEY".into(), Some(" d ".into()), vec!["API.x.io".into()], "value-aaa".into()).unwrap();
+        let b = v.create("B_KEY".into(), None, vec![], "value-bbb".into()).unwrap();
+        assert_eq!((a.description.as_deref(), a.allowed_hosts.as_slice()), (Some("d"), &["api.x.io".to_string()][..]));
+        assert!(v.create("A_KEY".into(), None, vec![], "other".into()).unwrap_err().contains("already exists"));
+        assert!(!std::fs::read_to_string(dir.join("secrets.json")).unwrap().contains("value-aaa"));
+        assert!(store.item(&service, &a.id).is_none(), "new values go only to vault.v2");
+
+        let u = v.update(&a.id, Some("".into()), None, Some("value-a2".into())).unwrap();
+        assert_eq!(u.description, None);
+        assert_eq!(v.value(&a.id).unwrap().as_deref(), Some("value-a2"));
+        assert_eq!(store.blob(&service)[&a.id], "value-a2", "written through");
+        v.update(&b.id, Some("only meta".into()), None, None).unwrap();
+        assert_eq!(v.value(&b.id).unwrap().as_deref(), Some("value-bbb"));
+
+        v.touch(&a.id, "why").unwrap();
+        assert_eq!(v.list().unwrap()[0].last_purpose.as_deref(), Some("why"));
+
+        store.put(&service, &b.id, "legacy-bbb");
+        v.delete(&b.id).unwrap();
+        assert_eq!(v.value(&b.id).unwrap(), None);
+        assert!(!store.blob(&service).contains_key(&b.id));
+        assert!(store.item(&service, &b.id).is_none(), "its legacy item goes too");
+        assert_eq!(v.values().unwrap().iter().map(|(m, _)| m.name.as_str()).collect::<Vec<_>>(), ["A_KEY"]);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_write_leaves_cache_and_list_unchanged() {
+        let (v, store, service, dir) = mem_vault();
+        let a = v.create("A_KEY".into(), None, vec![], "value-aaa".into()).unwrap();
+        store.fail_writes.store(true, Ordering::SeqCst);
+        assert!(v.update(&a.id, None, None, Some("value-new".into())).is_err());
+        assert!(v.create("B_KEY".into(), None, vec![], "value-bbb".into()).is_err());
+        assert!(v.delete(&a.id).is_err());
+        assert_eq!(v.value(&a.id).unwrap().as_deref(), Some("value-aaa"));
+        assert_eq!(v.list().unwrap().len(), 1);
+        assert_eq!(store.blob(&service).len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn denied_read_is_not_cached() {
+        let (v, store, service, dir) = mem_vault();
+        write_meta(&dir, &[("a1", "ALPHA_KEY")]);
+        store.put(&service, BLOB_ACCOUNT, r#"{"a1":"alpha-value"}"#);
+        store.deny.store(true, Ordering::SeqCst);
+        let err = v.values().unwrap_err();
+        assert!(err.contains("Always Allow"), "{err}");
+        assert!(v.value("a1").is_err(), "retried, still denied");
+        assert_eq!(store.reads.load(Ordering::SeqCst), 2);
+        store.deny.store(false, Ordering::SeqCst);
+        assert_eq!(v.values().unwrap()[0].1, "alpha-value");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn blob_json_round_trips() {
+        let (v, store, service, dir) = mem_vault();
+        let tricky = "line1\nline2 \"quoted\" \\ back ünïcode 🔑 {\"json\":true}";
+        let s = v.create("TRICKY_KEY".into(), None, vec![], tricky.into()).unwrap();
+        let raw = store.item(&service, BLOB_ACCOUNT).unwrap();
+        assert!(serde_json::from_str::<serde_json::Value>(&raw).unwrap().is_object());
+        assert_eq!(store.blob(&service)[&s.id], tricky);
+        CACHE.lock().unwrap().as_mut().unwrap().remove(&service);
+        assert_eq!(v.value(&s.id).unwrap().as_deref(), Some(tricky), "decoded from the store");
+
+        store.put(&service, BLOB_ACCOUNT, "not json");
+        CACHE.lock().unwrap().as_mut().unwrap().remove(&service);
+        assert!(v.value(&s.id).unwrap_err().contains("not valid JSON"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn recognises_denied_keychain_errors() {
+        assert!(is_denied(r#"Error { code: -128, message: "User canceled the operation." } User canceled the operation."#));
+        assert!(is_denied("Error { code: -25293 }"));
+        assert!(!is_denied("Error { code: -25291 }"));
+        assert!(!is_denied(""));
+    }
+
     /// Touches the real OS keychain, so it is opt-in: `cargo test -- --ignored`.
     #[test]
     #[ignore]
@@ -484,6 +840,7 @@ mod tests {
         v.delete(&s.id).unwrap();
         assert!(v.list().unwrap().is_empty());
         assert_eq!(v.value(&s.id).unwrap(), None, "keychain entry removed too");
+        let _ = Keychain.delete("AgentArea Desktop Secrets (test)", BLOB_ACCOUNT);
         let _ = std::fs::remove_dir_all(dir);
     }
 }
