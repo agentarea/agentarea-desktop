@@ -30,6 +30,7 @@ import { basename } from './format';
 import { ThreadFolder } from './FileChip';
 import { ApprovalCard, DraftRow, groupMessages, MessageRow, ToolGroup } from './MessageView';
 import { AttachmentChips, Composer } from './Composer';
+import { ContextPanel, ContextToggle, useContextPanel } from './ContextPanel';
 import { DropOverlay } from './DropZone';
 
 // Enough context to reply well from a pane, without rendering a whole thread's history.
@@ -505,9 +506,11 @@ function PaneBody({ leaf, session, focused }: { leaf: Leaf; session: Session; fo
   const recent = session.messages.slice(-TILE_TRANSCRIPT_SIZE);
   const fresh = session.messages.length === 0;
   const folderLabel = session.runner === 'cloud' ? null : session.cwd ? basename(session.cwd) : null;
+  const [ctx, setCtx] = useState(false);
 
   return (
     <>
+      {ctx && <ContextPanel session={session} onClose={() => setCtx(false)} className="absolute top-9 right-0 bottom-0 z-20 shadow-[-8px_0_24px_rgba(0,0,0,0.08)]" />}
       <PaneHeader leaf={leaf} title={session.title}>
         {folderLabel && (
           <span className="hidden min-w-0 shrink-[2] truncate text-[11px] text-muted-foreground-subtle @md:inline">{folderLabel}</span>
@@ -527,6 +530,7 @@ function PaneBody({ leaf, session, focused }: { leaf: Leaf; session: Session; fo
             Needs reply
           </span>
         ) : null}
+        <ContextToggle session={session} open={ctx} onToggle={() => setCtx((v) => !v)} className="h-6 shrink-0 px-1.5" />
       </PaneHeader>
 
       {fresh ? (
@@ -636,16 +640,19 @@ function SessionBody({ session, overId }: { session: Session; overId: string | n
 
   if (fresh)
     return (
-      <div className="relative flex flex-1 flex-col items-center justify-center px-6 pb-24">
-        <h1 className="mb-7 text-[26px] font-semibold tracking-tight text-foreground">What should we work on?</h1>
-        <div className="w-full max-w-[600px]">
-          <Composer session={session} autoFocus />
+      <WithContext session={session}>
+        <div className="relative flex flex-1 flex-col items-center justify-center px-6 pb-24">
+          <h1 className="mb-7 text-[26px] font-semibold tracking-tight text-foreground">What should we work on?</h1>
+          <div className="w-full max-w-[600px]">
+            <Composer session={session} autoFocus />
+          </div>
+          {overId === session.id && <DropOverlay />}
         </div>
-        {overId === session.id && <DropOverlay />}
-      </div>
+      </WithContext>
     );
 
   return (
+    <WithContext session={session}>
     <div className="relative flex min-h-0 flex-1 flex-col">
       <ScrollArea className="min-h-0 flex-1">
         <div className="mx-auto flex max-w-[720px] flex-col gap-5 px-6 py-6">
@@ -671,6 +678,21 @@ function SessionBody({ session, overId }: { session: Session; overId: string | n
         <Composer session={session} />
       </div>
       {overId === session.id && <DropOverlay />}
+    </div>
+    </WithContext>
+  );
+}
+
+/** The thread with its Context panel on the right; the toggle sits top-right of the thread. */
+function WithContext({ session, children }: { session: Session; children: React.ReactNode }) {
+  const open = useContextPanel((s) => s.open);
+  return (
+    <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+        {children}
+        <ContextToggle session={session} className="absolute top-2 right-3 z-10" />
+      </div>
+      {open && <ContextPanel session={session} />}
     </div>
   );
 }
