@@ -1,0 +1,11 @@
+{
+  "id": "backend-demo",
+  "title": "Backend demo",
+  "description": "Example plugin with an MCP backend: runs here or in the workspace, same tools either way.",
+  "entry": "index.html",
+  "icon": "server",
+  "server": {
+    "local": { "command": ["node", "server.mjs"] },
+    "cloud": { "instance": "plugin:backend-demo" }
+  }
+}

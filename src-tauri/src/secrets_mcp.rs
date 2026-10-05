@@ -15,6 +15,10 @@
 //! The same server also answers `/data`: the `agentarea_data` tools
 //! (data_mcp.rs), with their own per-turn tokens (`issue_data_token`).
 //!
+//! And `/plugins/<id>/mcp`: a plugin's backend (plugin_backends.rs), local or
+//! in the cloud, behind one stable URL; bearer tokens are bound to one plugin
+//! (`issue_plugin_token`).
+//!
 //! And `/proxy/agentarea/<secret>`: a thread's AgentArea client MCP endpoint,
 //! forwarded with the app's live access token (`register_proxy`). Agent
 //! processes live for hours and the token for one, so the CLIs get this URL —
@@ -32,6 +36,7 @@ use reqwest::Url;
 use serde_json::{json, Value};
 
 use crate::data_mcp::{self, DataTurn};
+use crate::plugin_backends::{self, Backends, Caller as GatewayCaller, Target};
 use crate::vault::{percent_encode, Redactor, SecretMeta, Vault};
 
 const HANDLE_TTL: Duration = Duration::from_secs(600);
@@ -154,6 +159,9 @@ struct Inner {
     data_turns: Mutex<HashMap<String, Arc<DataTurn>>>,
     /// `/proxy/agentarea/<secret>` → where it goes
     proxies: Mutex<HashMap<String, ProxyRoute>>,
+    /// `/plugins/<id>/mcp` bearer token → who holds it
+    plugin_tokens: Mutex<HashMap<String, Arc<GatewayCaller>>>,
+    backends: Arc<Backends>,
 }
 
 /// An AgentArea client MCP endpoint and the sign-in that reaches it.
@@ -200,6 +208,20 @@ impl Drop for DataToken {
     }
 }
 
+/// A bearer token for one plugin's gateway; revoked when dropped.
+pub struct PluginToken {
+    mcp: SecretsMcp,
+    pub token: String,
+}
+
+impl Drop for PluginToken {
+    fn drop(&mut self) {
+        // Dropped outside the lock: a pinned caller's release reconciles.
+        let caller = self.mcp.inner.plugin_tokens.lock().ok().and_then(|mut t| t.remove(&self.token));
+        drop(caller);
+    }
+}
+
 /// A proxy route for one agent process; removed when dropped.
 pub struct ProxyToken {
     mcp: SecretsMcp,
@@ -221,6 +243,10 @@ fn new_token() -> String {
 
 impl SecretsMcp {
     pub fn start(vault: Vault) -> Result<SecretsMcp, String> {
+        SecretsMcp::start_with(vault, plugin_backends::global().clone())
+    }
+
+    pub fn start_with(vault: Vault, backends: Arc<Backends>) -> Result<SecretsMcp, String> {
         let listener = TcpListener::bind(("127.0.0.1", 0)).map_err(|e| format!("secrets MCP bind: {e}"))?;
         let port = listener.local_addr().map_err(|e| e.to_string())?.port();
         let inner = Arc::new(Inner {
@@ -229,6 +255,8 @@ impl SecretsMcp {
             handles: Mutex::default(),
             data_turns: Mutex::default(),
             proxies: Mutex::default(),
+            plugin_tokens: Mutex::default(),
+            backends,
         });
         let srv = inner.clone();
         std::thread::spawn(move || {
@@ -269,6 +297,32 @@ impl SecretsMcp {
         }
         let url = format!("http://127.0.0.1:{}/proxy/agentarea/{secret}", self.port);
         ProxyToken { mcp: self.clone(), secret, url }
+    }
+
+    /// A plugin backend's stable gateway URL.
+    pub fn plugin_url(&self, plugin: &str) -> String {
+        format!("http://127.0.0.1:{}/plugins/{plugin}/mcp", self.port)
+    }
+
+    /// A bearer token that opens `plugin`'s gateway (and no other) until
+    /// dropped, following the current placement (the plugin's own page).
+    pub fn issue_plugin_token(&self, plugin: &str) -> PluginToken {
+        self.plugin_token(GatewayCaller::new(plugin, None, None))
+    }
+
+    /// An agent thread's token for `plugin`: pinned to the placement it has now
+    /// and with results redacted. None when the backend can't be reached.
+    pub fn issue_agent_plugin_token(&self, plugin: &str, redactor: Redactor) -> Option<PluginToken> {
+        let pin = self.inner.backends.pin(plugin)?;
+        Some(self.plugin_token(GatewayCaller::new(plugin, Some(pin), Some(redactor))))
+    }
+
+    fn plugin_token(&self, caller: GatewayCaller) -> PluginToken {
+        let token = new_token();
+        if let Ok(mut t) = self.inner.plugin_tokens.lock() {
+            t.insert(token.clone(), Arc::new(caller));
+        }
+        PluginToken { mcp: self.clone(), token }
     }
 
     pub fn issue_token(&self, thread: &str) -> TurnToken {
@@ -374,6 +428,7 @@ fn reason(status: u16) -> &'static str {
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        503 => "Service Unavailable",
         413 => "Payload Too Large",
         431 => "Request Header Fields Too Large",
         502 => "Bad Gateway",
@@ -404,9 +459,14 @@ fn serve_connection(stream: TcpStream, inner: &Inner) {
     let mut writer = stream;
     loop {
         let (status, body, close) = match read_request(&mut reader) {
-            Ok(req) if req.path.starts_with("/proxy/") => {
+            Ok(req) if req.path.starts_with("/proxy/") || req.path.starts_with("/plugins/") => {
                 let close = req.header("connection").is_some_and(|c| c.eq_ignore_ascii_case("close"));
-                match proxy(inner, &req, &mut writer, close) {
+                let served = if req.path.starts_with("/proxy/") {
+                    proxy(inner, &req, &mut writer, close)
+                } else {
+                    plugin_gateway(inner, &req, &mut writer, close)
+                };
+                match served {
                     Ok(()) if !close => continue,
                     Ok(()) => return,
                     Err(Some((status, msg))) => (status, Some(json!({ "error": msg })), close),
@@ -517,18 +577,99 @@ fn proxy(inner: &Inner, req: &HttpRequest, w: &mut impl Write, close: bool) -> R
     let Some(route) = route else {
         return Err(Some((404, "not found".into())));
     };
+    let token = data_mcp::live_token(&route.api_base, &route.token);
+    forward(&route.upstream, query, &token, req, w, close, None)
+}
+
+/// `/plugins/<id>/mcp`: the plugin's backend wherever it runs for this caller
+/// (an agent's pinned placement, else the current one). Local: the JSON-RPC
+/// message goes to its stdio server (plain JSON back; GET/DELETE are 405 and
+/// start nothing). Cloud: the request is streamed to the platform's proxy for
+/// the instance with the app's live token; signed out, nothing goes. A
+/// caller's session moved to another route gets 404 (initialize again).
+/// Agents' answers pass the vault redactor.
+fn plugin_gateway(inner: &Inner, req: &HttpRequest, w: &mut impl Write, close: bool) -> Result<(), Option<(u16, String)>> {
+    if req.header("origin").is_some_and(|o| !local_origin(o)) {
+        return Err(Some((403, "origin not allowed".into())));
+    }
+    let (path, query) = match req.path.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (req.path.as_str(), None),
+    };
+    let Some(id) = path.strip_prefix("/plugins/").and_then(|r| r.strip_suffix("/mcp")).filter(|id| !id.contains('/')) else {
+        return Err(Some((404, "not found".into())));
+    };
+    let token = req.header("authorization").and_then(|a| a.strip_prefix("Bearer ")).unwrap_or("");
+    let caller = inner.plugin_tokens.lock().ok().and_then(|t| t.get(token).cloned());
+    let Some(caller) = caller.filter(|c| c.plugin == id) else {
+        return Err(Some((401, "missing or unknown bearer token".into())));
+    };
+    let redact = |text: String| caller.redactor.as_ref().map(|r| r.redact(&text)).unwrap_or(text);
+    let target = inner.backends.target(id, caller.pin.as_ref().map(|p| &p.target)).map_err(|reason| {
+        // Only a cloud route has a GET stream or a session to DELETE.
+        if req.method != "POST" {
+            Some((405, "method not allowed".to_string()))
+        } else {
+            Some((503, redact(format!("{id} backend unavailable: {reason}"))))
+        }
+    })?;
+    let msg = (req.method == "POST").then(|| serde_json::from_slice::<Value>(&req.body).ok()).flatten();
+    let initializing = msg.as_ref().is_some_and(|m| m["method"] == "initialize");
+    if !caller.session_ok(&target.key(), initializing) {
+        return Err(Some((404, "the backend moved (placement or workspace changed); initialize a new session".into())));
+    }
+    match target {
+        Target::Cloud { url, api_base, .. } => {
+            let token = data_mcp::current_token(&api_base).ok_or(Some((401, "not signed in to AgentArea".to_string())))?;
+            forward(&url, query, &token, req, w, close, caller.redactor.as_ref())
+        }
+        Target::Local { data_dir } => {
+            if req.method != "POST" {
+                return Err(Some((405, "method not allowed".into())));
+            }
+            let Some(msg) = msg else {
+                return Err(Some((400, "parse error".into())));
+            };
+            if msg.is_array() {
+                return Err(Some((400, "batches are not supported".into())));
+            }
+            let local = inner.backends.start(id, &data_dir).map_err(|e| Some((503, redact(format!("{id} backend unavailable: {e}")))))?;
+            let reply = plugin_backends::local_message(&local, &msg).map(|r| match &caller.redactor {
+                Some(red) => serde_json::from_str(&red.redact(&r.to_string())).unwrap_or_else(|_| {
+                    json!({ "jsonrpc": "2.0", "id": r["id"], "error": { "code": -32603, "message": "reply withheld: redaction failed" } })
+                }),
+                None => r,
+            });
+            let status = if reply.is_some() { 200 } else { 202 };
+            write_response(w, status, reply.as_ref(), close).map_err(|_| None)
+        }
+    }
+}
+
+/// Send `req` to `upstream` (plus the caller's query) as `token` and stream
+/// the answer back (chunked). With a `redactor`, the body goes out one SSE
+/// event (or, for JSON, the whole body) at a time, redacted.
+#[allow(clippy::too_many_arguments)]
+fn forward(
+    upstream: &str,
+    query: Option<&str>,
+    token: &str,
+    req: &HttpRequest,
+    w: &mut impl Write,
+    close: bool,
+    redactor: Option<&Redactor>,
+) -> Result<(), Option<(u16, String)>> {
     let method = match req.method.as_str() {
         "GET" => reqwest::Method::GET,
         "POST" => reqwest::Method::POST,
         "DELETE" => reqwest::Method::DELETE,
         _ => return Err(Some((405, "method not allowed".into()))),
     };
-    let mut url = route.upstream.clone();
+    let mut url = upstream.to_string();
     if let Some(q) = query {
         url.push(if url.contains('?') { '&' } else { '?' });
         url.push_str(q);
     }
-    let token = data_mcp::live_token(&route.api_base, &route.token);
     let mut builder = proxy_client().request(method, url).bearer_auth(token);
     for (k, v) in &req.headers {
         if PROXY_REQUEST_HEADERS.contains(&k.as_str()) {
@@ -559,6 +700,18 @@ fn proxy(inner: &Inner, req: &HttpRequest, w: &mut impl Write, close: bool) -> R
         if bodiless {
             return Ok(());
         }
+        let send = |w: &mut dyn Write, chunk: &[u8]| -> Result<(), Option<(u16, String)>> {
+            if chunk.is_empty() {
+                return Ok(());
+            }
+            write!(w, "{:x}\r\n", chunk.len())
+                .and_then(|_| w.write_all(chunk))
+                .and_then(|_| w.write_all(b"\r\n"))
+                .and_then(|_| w.flush())
+                .map_err(|_| None)
+        };
+        // Held back until a whole SSE event is in, when redacting.
+        let mut held: Vec<u8> = Vec::new();
         // Each upstream chunk goes out as it comes: SSE events must not wait.
         loop {
             let chunk = match res.chunk().await {
@@ -567,14 +720,25 @@ fn proxy(inner: &Inner, req: &HttpRequest, w: &mut impl Write, close: bool) -> R
                 // Upstream broke mid-body; end the connection so the CLI notices.
                 Err(_) => return Err(None),
             };
-            if chunk.is_empty() {
+            let Some(r) = redactor else {
+                send(w, &chunk)?;
                 continue;
+            };
+            held.extend_from_slice(&chunk);
+            // SSE events end with a blank line: "\n\n" or "\r\n\r\n".
+            let lf = held.windows(2).rposition(|p| p == b"\n\n").map(|i| i + 2);
+            let crlf = held.windows(4).rposition(|p| p == b"\r\n\r\n").map(|i| i + 4);
+            if let Some(end) = lf.max(crlf) {
+                let rest = held.split_off(end);
+                send(w, r.redact(&String::from_utf8_lossy(&held)).as_bytes())?;
+                held = rest;
+            } else if held.len() > MAX_REQUEST_BODY {
+                // Not SSE and too big to hold: cut it off rather than pass it unredacted.
+                return Err(None);
             }
-            write!(w, "{:x}\r\n", chunk.len())
-                .and_then(|_| w.write_all(&chunk))
-                .and_then(|_| w.write_all(b"\r\n"))
-                .and_then(|_| w.flush())
-                .map_err(|_| None)?;
+        }
+        if let Some(r) = redactor {
+            send(w, r.redact(&String::from_utf8_lossy(&held)).as_bytes())?;
         }
         w.write_all(b"0\r\n\r\n").and_then(|_| w.flush()).map_err(|_| None)
     })
@@ -966,6 +1130,8 @@ mod tests {
             handles: Mutex::default(),
             data_turns: Mutex::default(),
             proxies: Mutex::default(),
+            plugin_tokens: Mutex::default(),
+            backends: Arc::new(Backends::new(PathBuf::from("/nonexistent"), Box::new(Vec::new))),
         }
     }
 
@@ -1144,6 +1310,7 @@ mod tests {
     /// ways, SSE events arrive one by one, and a renewed token is used at once.
     #[test]
     fn proxies_agentarea_mcp_with_the_live_token() {
+        let _live = data_mcp::LIVE_TOKEN_TEST.lock().unwrap_or_else(|e| e.into_inner());
         let (vault, dir) = temp_vault();
         let mcp = SecretsMcp::start(vault).unwrap();
         let (port, seen, go) = sse_upstream(2);

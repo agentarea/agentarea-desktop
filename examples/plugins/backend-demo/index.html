@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Backend demo</title>
+<style>
+  body { margin: 0; padding: 20px; font: 13px/1.45 -apple-system, system-ui, sans-serif; color: #0d0d0d; background: #fff; }
+  h1 { font-size: 15px; margin: 0 0 4px; }
+  .muted { color: #6b6b6b; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; background: #f3f3f3; font-size: 12px; }
+  .pill.local { background: #e8f3ec; color: #15803d; }
+  .pill.cloud { background: #e8eef9; color: #1d4ed8; }
+  .pill.unavailable { background: #fdecec; color: #b91c1c; }
+  ul { list-style: none; margin: 12px 0; padding: 0; border: 1px solid #ececec; border-radius: 10px; }
+  li { padding: 8px 12px; border-top: 1px solid #ececec; }
+  li:first-child { border-top: 0; }
+  li b { font-weight: 600; }
+  form { display: flex; gap: 8px; margin: 8px 0; }
+  input { flex: 1; padding: 7px 10px; border: 1px solid #ececec; border-radius: 8px; font: inherit; }
+  button { padding: 6px 12px; border: 1px solid #ececec; border-radius: 8px; background: #fff; font: inherit; cursor: pointer; }
+  button.primary { background: #0d0d0d; color: #fff; border-color: #0d0d0d; }
+  pre { background: #f7f7f7; border-radius: 8px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; }
+</style>
+</head>
+<body>
+<h1>Backend demo</h1>
+<p class="muted">This page and your agents call the same MCP backend. Where it runs: <span id="where" class="pill">…</span> <span id="reason" class="muted"></span></p>
+
+<h2 style="font-size:13px;margin:16px 0 0">Tools</h2>
+<ul id="tools"><li class="muted">Loading…</li></ul>
+
+<form id="echo">
+  <input id="text" placeholder="Text to echo" autocomplete="off">
+  <button class="primary">echo</button>
+</form>
+<form id="count">
+  <button class="primary">counter_increment</button>
+  <span class="muted" style="align-self:center">Counter lives in this workspace's plugin data folder.</span>
+</form>
+<pre id="out" class="muted">Results show here.</pre>
+
+<script>
+  // Bridge: one request/response pair per call, matched by id.
+  const pending = new Map();
+  let seq = 0;
+  function aa(method, params) {
+    return new Promise((resolve, reject) => {
+      const id = ++seq;
+      pending.set(id, { resolve, reject });
+      parent.postMessage({ type: "aa:request", id, method, params }, "*");
+    });
+  }
+  addEventListener("message", (e) => {
+    const m = e.data;
+    if (e.source !== parent || !m || m.type !== "aa:response" || !pending.has(m.id)) return;
+    const p = pending.get(m.id);
+    pending.delete(m.id);
+    m.error ? p.reject(new Error(m.error)) : p.resolve(m.result);
+  });
+
+  const $ = (id) => document.getElementById(id);
+  const show = (v) => { $("out").textContent = typeof v === "string" ? v : JSON.stringify(v, null, 2); };
+  const textOf = (r) => (r.content || []).map((c) => c.text).join("\n");
+
+  async function placement() {
+    const p = await aa("plugin.placement");
+    $("where").textContent = p.resolved + (p.mode === "auto" ? " (auto)" : "");
+    $("where").className = "pill " + p.resolved;
+    $("reason").textContent = p.reason || "";
+    return p;
+  }
+
+  async function tools() {
+    const list = $("tools");
+    try {
+      const { tools } = await aa("plugin.tools");
+      list.replaceChildren(...tools.map((t) => {
+        const li = document.createElement("li");
+        li.innerHTML = "<b></b> <span class='muted'></span>";
+        li.querySelector("b").textContent = t.name;
+        li.querySelector("span").textContent = t.description || "";
+        return li;
+      }));
+    } catch (err) {
+      list.innerHTML = "<li class='muted'></li>";
+      list.firstChild.textContent = err.message;
+    }
+  }
+
+  $("echo").onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      show(textOf(await aa("plugin.call", { name: "echo", arguments: { text: $("text").value } })));
+    } catch (err) {
+      show(err.message);
+    }
+  };
+  $("count").onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      show("counter = " + textOf(await aa("plugin.call", { name: "counter_increment", arguments: {} })));
+    } catch (err) {
+      show(err.message);
+    }
+  };
+
+  placement().then(tools).catch((err) => show(err.message));
+  // Placement follows the workspace and sign-in; keep the badge current.
+  setInterval(() => placement().catch(() => {}), 5000);
+</script>
+</body>
+</html>

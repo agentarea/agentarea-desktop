@@ -155,6 +155,16 @@ which is which, and a local agent can see both.
   and can't leave it. Requests go through `apiRequest`, so the plugin never
   sees a token. `threads.attachCloud({path})` attaches an
   `agentarea://files/…` reference.
+- **Plugin backends.** A plugin can declare an MCP server in `plugin.json`
+  (`"server": {"local": {...}, "cloud": {"instance": "plugin:<id>"}}`). It runs
+  locally (a stdio child) or as the workspace's MCP instance `plugin:<id>`,
+  only after the user reviews and allows it. The approved version runs from
+  a read-only copy, and later folder changes wait for another review. It is
+  reachable at one local URL either way:
+  `/plugins/<id>/mcp` on the loopback server. Local agents get it as
+  `plugin_<id>`; the plugin's page uses `plugin.tools()` / `plugin.call()`.
+  Design: [docs/plugin-backends.md](docs/plugin-backends.md); example:
+  `examples/plugins/backend-demo/`.
 - **LLM Wiki.** The example plugin (`examples/plugins/llm-wiki/`) shows
   "Local · folder" and "Cloud · AgentArea · workspace / root" trees side by
   side, with one filter across both. The viewer shows a source badge; hashes
@@ -204,5 +214,6 @@ src-tauri/             # Rust core: OAuth loopback, runners (persistent CLI
                        # processes), local MCP runtime,
                        # vault (keychain) + secrets MCP server, data MCP
                        # server (data_mcp.rs: local + cloud data sources),
-                       # AgentArea MCP proxy (secrets_mcp.rs)
+                       # AgentArea MCP proxy (secrets_mcp.rs), plugin
+                       # backends + their gateway (plugin_backends.rs)
 ```

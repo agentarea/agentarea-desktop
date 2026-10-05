@@ -12,6 +12,8 @@ mod data_mcp;
 mod local_mcp;
 mod mcp_sandbox;
 mod plugin_exec;
+mod plugin_backends;
+mod plugin_trust;
 mod plugins;
 mod runners;
 mod secrets;
@@ -298,6 +300,10 @@ struct TurnArgs {
 /// the CLI's own file tools — Claude gets each plugin folder as `--add-dir`,
 /// read-only. Cloud files (the workspace library) go through its tools, which
 /// use the live token + `api_base` + `workspace`; those stay in the process's memory.
+///
+/// Plugin backends: each enabled plugin whose backend is reachable now (local
+/// or cloud, plugin_backends.rs) is added as the MCP server `plugin_<id>`, at
+/// its stable gateway URL with a bearer token for that plugin only.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn run_agent(
@@ -339,9 +345,10 @@ async fn run_agent(
 fn start_turn(app: &AppHandle, a: TurnArgs) -> Result<(), String> {
     let session_id = a.session_id.as_str();
     check_id(session_id)?;
-    // The workspace goes into a header, the base into URLs: keep both plain.
+    // The workspace slug and the base go into URLs: keep both plain (no dots,
+    // so no `..`).
     if let Some(w) = &a.workspace {
-        if w.is_empty() || w.len() > 128 || !w.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
+        if w.is_empty() || w.len() > 128 || !w.chars().all(|c| c.is_ascii_alphanumeric() || "-_".contains(c)) {
             return Err(format!("invalid workspace: {w}"));
         }
     }
@@ -398,6 +405,12 @@ fn start_turn(app: &AppHandle, a: TurnArgs) -> Result<(), String> {
         })
         .collect();
 
+    // Plugin backends reachable now, with where they run. A thread's process
+    // keeps the placement it started with; when a backend moves (placement,
+    // workspace), the next turn restarts the process with the new one.
+    let backend_routes = if server.is_some() { plugin_backends::global().available() } else { Vec::new() };
+    let backends: Vec<String> = backend_routes.iter().map(|(id, _)| id.clone()).collect();
+
     // Everything the process is started with; when any of it changes, the
     // next turn restarts it. Codex takes model/effort per turn, so only
     // "back to default" needs a restart there.
@@ -407,6 +420,7 @@ fn start_turn(app: &AppHandle, a: TurnArgs) -> Result<(), String> {
         serde_json::to_string(&sources).unwrap_or_default().hash(&mut h);
         secrets.iter().for_each(|(m, v)| (&m.name, v).hash(&mut h));
         server.is_some().hash(&mut h);
+        backend_routes.hash(&mut h);
         match kind {
             runners::Kind::Claude => (&a.model, &a.effort).hash(&mut h),
             runners::Kind::Codex => (a.model.is_none(), a.effort.is_none()).hash(&mut h),
@@ -417,7 +431,7 @@ fn start_turn(app: &AppHandle, a: TurnArgs) -> Result<(), String> {
     let proc = match runners.reusable(session_id, signature)? {
         Some(p) => p,
         None => {
-            let (cmd, guards) = agent_command(kind, &a, &data_dir, &server, &secrets, &redactor, &sources, &extra_dirs)?;
+            let (cmd, guards) = agent_command(kind, &a, &data_dir, &server, &secrets, &redactor, &sources, &extra_dirs, &backends)?;
             let codex = (kind == runners::Kind::Codex).then(|| runners::CodexThread {
                 resume_id: a.resume_id.clone(),
                 cwd: cwd.clone(),
@@ -453,6 +467,7 @@ fn agent_command(
     redactor: &vault::Redactor,
     sources: &[data_mcp::Source],
     extra_dirs: &[String],
+    backends: &[String],
 ) -> Result<(Command, runners::Guards), String> {
     let session_id = a.session_id.as_str();
     let mut guards = runners::Guards { keep: Vec::new(), files: Vec::new() };
@@ -466,6 +481,15 @@ fn agent_command(
     let data_turn = server
         .as_ref()
         .map(|s| (s.data_url(), s.issue_data_token(data_mcp::DataTurn::new(session_id, sources.to_vec(), cloud, redactor.clone()))));
+    // Plugin backends: (server name, gateway URL, token) each; the token pins
+    // the placement for this process and redacts results like agentarea_data.
+    let plugin_turns: Vec<(String, String, secrets_mcp::PluginToken)> = match server {
+        Some(s) => backends
+            .iter()
+            .filter_map(|id| Some((format!("plugin_{id}"), s.plugin_url(id), s.issue_agent_plugin_token(id, redactor.clone())?)))
+            .collect(),
+        None => Vec::new(),
+    };
     // The AgentArea client endpoint: through the local proxy (live token) when
     // it runs, else directly with the token this turn got.
     let agentarea: Option<(String, Option<String>)> = match (a.mcp_url.clone(), a.token.clone()) {
@@ -527,6 +551,12 @@ fn agent_command(
                     "headers": { "Authorization": format!("Bearer {}", turn.token) },
                 }));
             }
+            for (name, url, token) in &plugin_turns {
+                servers.insert(name.clone(), serde_json::json!({
+                    "type": "http", "url": url,
+                    "headers": { "Authorization": format!("Bearer {}", token.token) },
+                }));
+            }
             // Local data sources: readable, never edited (`//` = absolute path
             // in a permission rule). The rules are space-separated, so a folder
             // whose path has spaces or commas isn't added rather than left writable.
@@ -580,6 +610,18 @@ fn agent_command(
                     // Read-only tools over the user's own data.
                     .args(["-c", "mcp_servers.agentarea_data.default_tools_approval_mode=\"approve\""]);
             }
+            for (i, (name, url, token)) in plugin_turns.iter().enumerate() {
+                // Ids may differ only in "-" vs "_", so env names go by index.
+                let var = format!("AGENTAREA_PLUGIN_TOKEN_{i}");
+                cmd.env(&var, &token.token)
+                    .arg("-c")
+                    .arg(format!("mcp_servers.{name}.url={}", serde_json::json!(url)))
+                    .arg("-c")
+                    .arg(format!("mcp_servers.{name}.bearer_token_env_var=\"{var}\""))
+                    // Same as Claude, where every configured server is allowed:
+                    // the user enabled the plugin (and allowed its local server).
+                    .args(["-c", &format!("mcp_servers.{name}.default_tools_approval_mode=\"approve\"")]);
+            }
             if let Some((url, turn)) = &secrets_turn {
                 cmd.env("AGENTAREA_SECRETS_TOKEN", &turn.token)
                     .arg("-c")
@@ -595,6 +637,9 @@ fn agent_command(
         guards.keep.push(Box::new(t));
     }
     if let Some((_, t)) = data_turn {
+        guards.keep.push(Box::new(t));
+    }
+    for (_, _, t) in plugin_turns {
         guards.keep.push(Box::new(t));
     }
     Ok((cmd, guards))
@@ -716,6 +761,12 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             app.manage(runners::Runners::new(Arc::new(move |session_id, event| emit_agent(&handle, session_id, event))));
+            // Approved plugin backends run from read-only copies in the app's own data.
+            if let Ok(dir) = app.path().app_data_dir() {
+                let root = dir.join("plugin-snapshots");
+                plugin_trust::set_snapshot_root(root.clone());
+                std::thread::spawn(move || plugins::sweep_snapshots(&root));
+            }
             match vault::Vault::user().and_then(secrets_mcp::SecretsMcp::start) {
                 Ok(server) => {
                     app.manage(server);
@@ -753,6 +804,13 @@ pub fn run() {
             plugins::plugin_fs_read,
             plugin_exec::plugin_exec_start,
             plugin_exec::plugin_exec_status,
+            plugins::plugin_set_placement,
+            plugins::plugin_approve_server,
+            plugins::plugin_server_review,
+            plugin_backends::plugin_backends_set_context,
+            plugin_backends::plugin_backend_status,
+            plugin_backends::plugin_backend_tools,
+            plugin_backends::plugin_backend_call,
             state_db::state_call,
             local_mcp::local_mcp_list,
             local_mcp::local_mcp_install,
@@ -770,6 +828,7 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 app.state::<local_mcp::LocalMcp>().stop_all();
                 app.state::<runners::Runners>().stop_all();
+                plugin_backends::global().stop_all();
             }
         });
 }
@@ -807,13 +866,71 @@ mod tests {
     }
 
     fn start(r: &Runners, kind: Kind, a: &TurnArgs, data_dir: &std::path::Path, cwd: &std::path::Path) -> Arc<runners::Proc> {
-        let (cmd, guards) = agent_command(kind, a, data_dir, &None, &[], &vault::Redactor::default(), &[], &[]).unwrap();
+        let (cmd, guards) = agent_command(kind, a, data_dir, &None, &[], &vault::Redactor::default(), &[], &[], &[]).unwrap();
         let codex = (kind == Kind::Codex).then(|| runners::CodexThread {
             resume_id: a.resume_id.clone(),
             cwd: cwd.to_path_buf(),
             model: a.model.clone(),
         });
         r.spawn(kind, &a.session_id, 1, cmd, cwd, vault::Redactor::default(), guards, codex).unwrap()
+    }
+
+    /// Each available plugin backend becomes `plugin_<id>` at its gateway URL,
+    /// with a token for that plugin only, revoked with the process.
+    #[test]
+    fn wires_plugin_backends_into_agent_runs() {
+        let data_dir = temp("plugin-wiring");
+        let entry = plugin_backends::Entry {
+            id: "backend-demo".into(),
+            decl: serde_json::from_str(r#"{"cloud":{"instance":"plugin:backend-demo"}}"#).unwrap(),
+            mode: plugin_backends::Mode::Auto,
+            grant: Some(plugin_backends::Grant {
+                fingerprint: "f".into(),
+                snapshot: data_dir.clone(),
+                instances: vec!["ru/acme/6f1c2a3b-0000-4000-8000-000000000001".into()],
+            }),
+        };
+        let backends = Arc::new(plugin_backends::Backends::new(data_dir.clone(), Box::new(move || vec![entry.clone()])));
+        backends.set_context(plugin_backends::Context {
+            env: "ru".into(),
+            slug: Some("acme".into()),
+            api_base: Some("https://api.example".into()),
+            instances: Some(vec![plugin_backends::Instance { id: "6f1c2a3b-0000-4000-8000-000000000001".into(), name: "plugin:backend-demo".into() }]),
+            error: None,
+        });
+        assert_eq!(backends.available().len(), 1);
+        let server = secrets_mcp::SecretsMcp::start_with(vault::Vault::at(data_dir.join("vault"), "AgentArea Desktop Secrets (test)"), backends).unwrap();
+        let ids = ["backend-demo".to_string(), "unavailable-one".to_string()];
+        let session = uuid::Uuid::new_v4().to_string();
+        let redactor = vault::Redactor::default();
+
+        let a = args("claude", &session, "haiku", None);
+        let (cmd, guards) = agent_command(Kind::Claude, &a, &data_dir, &Some(server.clone()), &[], &redactor, &[], &[], &ids).unwrap();
+        let cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&guards.files[0]).unwrap()).unwrap();
+        let entry = &cfg["mcpServers"]["plugin_backend-demo"];
+        assert_eq!(entry["url"], server.plugin_url("backend-demo"));
+        let bearer = entry["headers"]["Authorization"].as_str().unwrap().to_string();
+        let argv: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(argv.contains(&"mcp__plugin_backend-demo".to_string()), "{argv:?}");
+        assert!(cfg["mcpServers"].get("plugin_unavailable-one").is_none(), "unreachable backends are skipped");
+
+        let a = args("codex", &session, "gpt-5", None);
+        let (cmd, codex_guards) = agent_command(Kind::Codex, &a, &data_dir, &Some(server.clone()), &[], &redactor, &[], &[], &ids).unwrap();
+        let argv: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
+        assert!(argv.contains(&format!("mcp_servers.plugin_backend-demo.url=\"{}\"", server.plugin_url("backend-demo"))), "{argv:?}");
+        assert!(argv.contains(&"mcp_servers.plugin_backend-demo.bearer_token_env_var=\"AGENTAREA_PLUGIN_TOKEN_0\"".to_string()), "{argv:?}");
+        assert!(cmd.get_envs().any(|(k, v)| k == "AGENTAREA_PLUGIN_TOKEN_0" && v.is_some_and(|v| !v.is_empty())));
+
+        // Tokens die with their process: the gateway no longer knows Claude's.
+        drop(guards);
+        let (addr, path) = server.plugin_url("backend-demo").trim_start_matches("http://").split_once('/').map(|(a, p)| (a.to_string(), p.to_string())).unwrap();
+        let mut s = std::net::TcpStream::connect(addr).unwrap();
+        write!(s, "POST /{path} HTTP/1.1\r\nHost: x\r\nAuthorization: {bearer}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}").unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).unwrap();
+        assert!(out.starts_with("HTTP/1.1 401"), "{out}");
+        drop(codex_guards);
+        let _ = std::fs::remove_dir_all(&data_dir);
     }
 
     /// Events until `done` says stop (printed as they come); panics on timeout.
