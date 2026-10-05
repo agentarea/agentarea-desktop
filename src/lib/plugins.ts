@@ -247,6 +247,26 @@ export async function runBridgeMethod(pluginId: string, method: string, params: 
       usePlugins.getState().open(pluginId, typeof param(params, 'hash') === 'string' ? (param(params, 'hash') as string) : '');
       return { ok: true };
 
+    case 'ui.openUrl': {
+      // The frame's sandbox blocks popups, so http(s) links open in the default browser from here.
+      const target = new URL(str(params, 'url'));
+      if (target.protocol !== 'http:' && target.protocol !== 'https:') throw new Error('only http(s) links');
+      const { openUrl } = await import('@tauri-apps/plugin-opener');
+      await openUrl(target.href);
+      return { ok: true };
+    }
+
+    // ── exec: start a program the plugin's manifest declares under `commands` ("exec" permission;
+    // the host re-checks both), then poll its last output lines and exit code.
+    case 'exec.start': {
+      const args = param(params, 'args') ?? [];
+      if (!Array.isArray(args) || args.some((a) => typeof a !== 'string')) throw new Error('"args" must be a list of strings');
+      return { runId: await invoke<string>('plugin_exec_start', { id: pluginId, name: str(params, 'command'), args }) };
+    }
+
+    case 'exec.status':
+      return invoke('plugin_exec_status', { id: pluginId, runId: str(params, 'runId') });
+
     case 'threads.list':
       return store.sessions.map((s) => ({
         id: s.id,

@@ -52,6 +52,9 @@ struct Manifest {
     #[serde(default)]
     permissions: Vec<String>,
     icon: Option<String>,
+    /// "exec" plugins: name → argv of the local programs the plugin may start.
+    #[serde(default)]
+    commands: HashMap<String, Vec<String>>,
 }
 
 /// Largest SVG icon a plugin may ship.
@@ -308,6 +311,29 @@ pub fn plugin_fs_read(id: String, path: String) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// The argv an enabled "exec" plugin declared under `commands.<name>` in its
+/// manifest, with a leading `~/` expanded. Re-read from disk on every call, so
+/// only what the manifest says now can run.
+pub(crate) fn plugin_command(id: &str, name: &str) -> Result<Vec<String>, String> {
+    if !valid_id(id) {
+        return Err(format!("invalid plugin id: {id}"));
+    }
+    if disabled().contains(id) {
+        return Err(format!("plugin {id} is disabled"));
+    }
+    let json = std::fs::read_to_string(plugins_dir()?.join(id).join("plugin.json")).map_err(|e| e.to_string())?;
+    let m: Manifest = serde_json::from_str(&json).map_err(|e| format!("plugin.json: {e}"))?;
+    if !m.permissions.iter().any(|p| p == "exec") {
+        return Err(format!("plugin {id} has no \"exec\" permission"));
+    }
+    let argv = m.commands.get(name).filter(|a| !a.is_empty()).ok_or_else(|| format!("plugin {id} declares no command \"{name}\""))?;
+    let home = std::env::var("HOME").map_err(|_| "HOME not set".to_string())?;
+    Ok(argv
+        .iter()
+        .map(|a| a.strip_prefix("~/").map_or_else(|| a.clone(), |rest| format!("{home}/{rest}")))
+        .collect())
+}
+
 /// Ids name folders and URL segments: keep them to a boring charset.
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
@@ -436,6 +462,106 @@ fn resolve(root: &Path, uri_path: &str, disabled: &HashSet<String>) -> Result<Pa
     Ok(file)
 }
 
+/// Media an "fs" plugin may load from its granted folder by URL (`/<id>/@root/<path>`):
+/// what `<video>` / `<img>` need and `fs.read` (text only) can't give.
+const ROOT_MEDIA: &[&str] = &["mp4", "m4v", "mov", "webm", "mp3", "m4a", "wav", "png", "jpg", "jpeg", "gif", "webp"];
+
+/// `/<id>/@root/<rel>` → a media file inside the folder the user granted that
+/// plugin, under the same checks as `resolve` (decoded per segment, canonical
+/// path stays inside). `None` when the path isn't an `@root` one.
+fn resolve_granted(uri_path: &str, disabled: &HashSet<String>) -> Option<Result<PathBuf, StatusCode>> {
+    let mut segs = uri_path.trim_start_matches('/').splitn(3, '/');
+    let (id, marker, rest) = (segs.next()?, segs.next()?, segs.next().unwrap_or(""));
+    if marker != "@root" {
+        return None;
+    }
+    Some((|| {
+        let id = web::percent_decode(id, false).filter(|s| valid_id(s)).ok_or(StatusCode::NOT_FOUND)?;
+        if disabled.contains(&id) {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        let plugin = list_plugins().ok().and_then(|ps| ps.into_iter().find(|p| p.id == id)).ok_or(StatusCode::NOT_FOUND)?;
+        if !plugin.permissions.iter().any(|x| x == "fs") {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        let root = plugin.root.ok_or(StatusCode::NOT_FOUND)?;
+        let rest = rest
+            .split('/')
+            .map(|s| web::percent_decode(s, false))
+            .collect::<Option<Vec<_>>>()
+            .ok_or(StatusCode::BAD_REQUEST)?
+            .join("/");
+        let rel = safe_relative(&rest).ok_or(StatusCode::FORBIDDEN)?;
+        let ext = rel.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+        if !ROOT_MEDIA.contains(&ext.as_str()) {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        let base = Path::new(&root).canonicalize().map_err(|_| StatusCode::NOT_FOUND)?;
+        let file = base.join(rel).canonicalize().map_err(|_| StatusCode::NOT_FOUND)?;
+        if !file.starts_with(&base) || !file.is_file() {
+            return Err(StatusCode::NOT_FOUND);
+        }
+        Ok(file)
+    })())
+}
+
+/// Largest slice served for one open-ended range request (`bytes=N-`): video
+/// players ask again for the rest.
+const RANGE_CHUNK: u64 = 4 << 20;
+
+/// `Range: bytes=a-b` / `bytes=a-` / `bytes=-n` → inclusive (start, end) within `len`.
+fn parse_range(header: &str, len: u64) -> Option<(u64, u64)> {
+    let spec = header.trim().strip_prefix("bytes=")?;
+    if spec.contains(',') || len == 0 {
+        return None;
+    }
+    let (a, b) = spec.split_once('-')?;
+    let (start, end) = match (a.trim(), b.trim()) {
+        ("", n) => {
+            let n: u64 = n.parse().ok()?;
+            (len.saturating_sub(n), len - 1)
+        }
+        (a, "") => {
+            let a: u64 = a.parse().ok()?;
+            (a, (a + RANGE_CHUNK - 1).min(len - 1))
+        }
+        (a, b) => (a.parse().ok()?, b.parse::<u64>().ok()?.min(len - 1)),
+    };
+    (start <= end && start < len).then_some((start, end))
+}
+
+/// A granted-folder media file, whole or the requested byte range (206).
+fn media_response(file: &Path, range: Option<&str>, csp: &str) -> Result<Response<Vec<u8>>, StatusCode> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(file).map_err(|_| StatusCode::NOT_FOUND)?;
+    let len = f.metadata().map_err(|_| StatusCode::NOT_FOUND)?.len();
+    let builder = Response::builder()
+        .header("Content-Type", content_type(file))
+        .header("Content-Security-Policy", csp)
+        .header("X-Content-Type-Options", "nosniff")
+        .header("Accept-Ranges", "bytes")
+        .header("Cache-Control", "no-store");
+    let Some(header) = range else {
+        let mut bytes = Vec::with_capacity(len as usize);
+        f.read_to_end(&mut bytes).map_err(|_| StatusCode::NOT_FOUND)?;
+        return Ok(builder.body(bytes).expect("media response"));
+    };
+    let Some((start, end)) = parse_range(header, len) else {
+        return Ok(Response::builder()
+            .status(StatusCode::RANGE_NOT_SATISFIABLE)
+            .header("Content-Range", format!("bytes */{len}"))
+            .body(Vec::new())
+            .expect("range response"));
+    };
+    let mut bytes = vec![0; (end - start + 1) as usize];
+    f.seek(SeekFrom::Start(start)).and_then(|_| f.read_exact(&mut bytes)).map_err(|_| StatusCode::NOT_FOUND)?;
+    Ok(builder
+        .status(StatusCode::PARTIAL_CONTENT)
+        .header("Content-Range", format!("bytes {start}-{end}/{len}"))
+        .body(bytes)
+        .expect("range response"))
+}
+
 fn content_type(path: &Path) -> &'static str {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
     match ext.as_str() {
@@ -454,6 +580,12 @@ fn content_type(path: &Path) -> &'static str {
         "ttf" => "font/ttf",
         "wasm" => "application/wasm",
         "txt" | "md" => "text/plain; charset=utf-8",
+        "mp4" | "m4v" => "video/mp4",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "wav" => "audio/wav",
         _ => "application/octet-stream",
     }
 }
@@ -481,8 +613,17 @@ fn plugin_csp(ancestors: &[String]) -> String {
 pub fn handle<R: Runtime>(ctx: UriSchemeContext<'_, R>, request: Request<Vec<u8>>, responder: UriSchemeResponder) {
     let ancestors = web::app_origins(ctx.app_handle());
     let path = request.uri().path().to_string();
+    let range = request.headers().get("range").and_then(|v| v.to_str().ok()).map(str::to_string);
     // File reads stay off the webview's thread.
     std::thread::spawn(move || {
+        if let Some(file) = resolve_granted(&path, &disabled()) {
+            let csp = plugin_csp(&ancestors);
+            responder.respond(match file.and_then(|f| media_response(&f, range.as_deref(), &csp)) {
+                Ok(response) => response,
+                Err(status) => web::error(status, status.canonical_reason().unwrap_or("error")),
+            });
+            return;
+        }
         let response = plugins_dir()
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
             .and_then(|root| resolve(&root, &path, &disabled()))
@@ -608,6 +749,25 @@ const SEED_INDEX: &str = r#"<!doctype html>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parse_range_forms() {
+        assert_eq!(parse_range("bytes=0-99", 1000), Some((0, 99)));
+        assert_eq!(parse_range("bytes=900-", 1000), Some((900, 999)));
+        assert_eq!(parse_range("bytes=0-", 10 << 20), Some((0, RANGE_CHUNK - 1)));
+        assert_eq!(parse_range("bytes=-100", 1000), Some((900, 999)));
+        assert_eq!(parse_range("bytes=0-5000", 1000), Some((0, 999)));
+        assert_eq!(parse_range("bytes=1000-", 1000), None);
+        assert_eq!(parse_range("bytes=0-1,5-6", 1000), None);
+        assert_eq!(parse_range("items=0-1", 1000), None);
+    }
+
+    #[test]
+    fn granted_paths_only_under_marker() {
+        assert!(resolve_granted("/channels/index.html", &HashSet::new()).is_none());
+        assert!(resolve_granted("/channels/@root/../x.mp4", &HashSet::new()).is_some_and(|r| r.is_err()));
+        assert_eq!(resolve_granted("/channels/@root/a.mp4", &HashSet::from(["channels".to_string()])), Some(Err(StatusCode::FORBIDDEN)));
+    }
+
     use super::*;
 
     fn temp_root(name: &str) -> PathBuf {

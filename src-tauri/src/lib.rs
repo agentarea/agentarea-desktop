@@ -11,6 +11,7 @@ use tauri::{AppHandle, Emitter, Manager};
 mod data_mcp;
 mod local_mcp;
 mod mcp_sandbox;
+mod plugin_exec;
 mod plugins;
 mod runners;
 mod secrets;
@@ -750,6 +751,8 @@ pub fn run() {
             plugins::plugin_set_cloud_root,
             plugins::plugin_fs_list,
             plugins::plugin_fs_read,
+            plugin_exec::plugin_exec_start,
+            plugin_exec::plugin_exec_status,
             state_db::state_call,
             local_mcp::local_mcp_list,
             local_mcp::local_mcp_install,
