@@ -38,7 +38,7 @@ pub struct Plugin {
     /// Folder granted to an "fs" plugin by the user; it can read only inside.
     root: Option<String>,
     /// Workspace-files prefix a "cloud" plugin reads under ("" = the whole
-    /// library, else "a/b/"); `wiki/` until the user changes it.
+    /// library, else "a/b/"); the whole library until the user narrows it.
     #[serde(rename = "cloudRoot")]
     cloud_root: Option<String>,
     /// Sidebar glyph: a lucide icon name ("radio-tower"), or the plugin's own
@@ -176,7 +176,7 @@ impl Approval {
     }
 }
 
-pub const DEFAULT_CLOUD_ROOT: &str = "wiki/";
+pub const DEFAULT_CLOUD_ROOT: &str = "";
 
 impl State {
     fn placement(&self, id: &str) -> Mode {
@@ -562,7 +562,7 @@ pub fn plugin_set_root(id: String, path: Option<String>) -> Result<(), String> {
     })
 }
 
-/// Set (or with `None`, reset to `wiki/`) the workspace-files prefix a
+/// Set (or with `None`, reset to the whole library) the workspace-files prefix a
 /// "cloud" plugin reads under. Returns the stored prefix.
 #[tauri::command]
 pub fn plugin_set_cloud_root(id: String, prefix: Option<String>) -> Result<String, String> {

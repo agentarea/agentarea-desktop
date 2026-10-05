@@ -84,7 +84,7 @@ export interface Plugin {
   permissions: string[];
   /** the granted folder, for "fs" plugins */
   root: string | null;
-  /** workspace-files prefix for "cloud" plugins: "" or "a/b/" (default "wiki/") */
+  /** workspace-files prefix for "cloud" plugins: "" (whole library, the default) or "a/b/" */
   cloudRoot: string | null;
   /** plugin.json `icon`: a lucide name ("radio-tower"), or the plugin's own SVG as a
    *  `data:` URL (validated and size-capped in Rust); null = initials badge */
@@ -289,7 +289,7 @@ async function requireServer(pluginId: string): Promise<void> {
 function cloudRoot(pluginId: string): string {
   const p = usePlugins.getState().plugins.find((x) => x.id === pluginId);
   if (!p?.enabled || !p.permissions.includes('cloud')) throw new Error(`plugin ${pluginId} has no cloud access`);
-  return p.cloudRoot ?? 'wiki/';
+  return p.cloudRoot ?? '';
 }
 
 /**
