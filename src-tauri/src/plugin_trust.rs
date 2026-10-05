@@ -353,19 +353,12 @@ pub fn retry_keychain() {
 
 #[cfg(not(test))]
 fn read_item() -> Result<Option<String>, String> {
-    match keyring::Entry::new(KEY_SERVICE, KEY_ACCOUNT).map_err(|e| format!("keychain: {e}"))?.get_password() {
-        Ok(v) => Ok(Some(v)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(format!("keychain: {e}")),
-    }
+    crate::keychain::get(KEY_SERVICE, KEY_ACCOUNT)
 }
 
 #[cfg(not(test))]
 fn write_item(value: &str) -> Result<(), String> {
-    keyring::Entry::new(KEY_SERVICE, KEY_ACCOUNT)
-        .map_err(|e| format!("keychain: {e}"))?
-        .set_password(value)
-        .map_err(|e| format!("keychain: {e}"))
+    crate::keychain::set(KEY_SERVICE, KEY_ACCOUNT, value)
 }
 
 /// Tests never touch the Keychain: one in-memory item, and writes that touch

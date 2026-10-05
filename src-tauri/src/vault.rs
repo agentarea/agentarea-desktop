@@ -170,36 +170,25 @@ fn is_denied(detail: &str) -> bool {
     ["code: -128", "code: -25293", "User canceled", "denied"].iter().any(|s| detail.contains(s))
 }
 
-fn keychain_error(e: keyring::Error) -> String {
-    let detail = match &e {
-        keyring::Error::PlatformFailure(inner) | keyring::Error::NoStorageAccess(inner) => format!("{inner:?} {inner}"),
-        _ => String::new(),
-    };
+fn keychain_error(detail: String) -> String {
     if is_denied(&detail) {
         DENIED.into()
     } else {
-        format!("keychain: {e}")
+        detail
     }
 }
 
 impl Store for Keychain {
     fn get(&self, service: &str, account: &str) -> Result<Option<String>, String> {
-        match keyring::Entry::new(service, account).map_err(keychain_error)?.get_password() {
-            Ok(v) => Ok(Some(v)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(keychain_error(e)),
-        }
+        crate::keychain::get(service, account).map_err(keychain_error)
     }
 
     fn set(&self, service: &str, account: &str, value: &str) -> Result<(), String> {
-        keyring::Entry::new(service, account).map_err(keychain_error)?.set_password(value).map_err(keychain_error)
+        crate::keychain::set(service, account, value).map_err(keychain_error)
     }
 
     fn delete(&self, service: &str, account: &str) -> Result<(), String> {
-        match keyring::Entry::new(service, account).map_err(keychain_error)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(keychain_error(e)),
-        }
+        crate::keychain::delete(service, account).map_err(keychain_error)
     }
 }
 

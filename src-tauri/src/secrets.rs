@@ -5,30 +5,19 @@
 
 const SERVICE: &str = "AgentArea Desktop";
 
-fn entry(key: &str) -> Result<keyring::Entry, String> {
-    keyring::Entry::new(SERVICE, key).map_err(|e| e.to_string())
-}
-
 #[tauri::command]
 pub fn token_save(key: String, value: String) -> Result<(), String> {
-    entry(&key)?.set_password(&value).map_err(|e| e.to_string())
+    crate::keychain::set(SERVICE, &key, &value)
 }
 
 #[tauri::command]
 pub fn token_load(key: String) -> Result<Option<String>, String> {
-    match entry(&key)?.get_password() {
-        Ok(v) => Ok(Some(v)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(e.to_string()),
-    }
+    crate::keychain::get(SERVICE, &key)
 }
 
 #[tauri::command]
 pub fn token_clear(key: String) -> Result<(), String> {
-    match entry(&key)?.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(e.to_string()),
-    }
+    crate::keychain::delete(SERVICE, &key)
 }
 
 #[cfg(test)]

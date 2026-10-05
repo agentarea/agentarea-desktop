@@ -9,6 +9,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 mod data_mcp;
+mod keychain;
 mod local_mcp;
 mod mcp_sandbox;
 mod plugin_exec;
