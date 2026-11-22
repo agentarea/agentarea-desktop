@@ -46,6 +46,26 @@ import { runCloud } from './lib/cloud';
 import { loadCodexModels, type ModelOption } from './lib/models';
 import type { CatalogItem, Message, Runner, Session } from './data';
 
+
+const WITHOUT_SIGN_IN_KEY = 'aa.withoutSignIn';
+
+function withoutSignIn(): boolean {
+  try {
+    return localStorage.getItem(WITHOUT_SIGN_IN_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function setWithoutSignIn(on: boolean) {
+  try {
+    if (on) localStorage.setItem(WITHOUT_SIGN_IN_KEY, '1');
+    else localStorage.removeItem(WITHOUT_SIGN_IN_KEY);
+  } catch {
+    /* best-effort */
+  }
+}
+
 export type Theme = 'light' | 'dark';
 export type AuthStatus = 'unauthenticated' | 'authenticating' | 'authenticated';
 export type ConnectionStatus = 'offline' | 'connecting' | 'connected';
@@ -58,13 +78,13 @@ interface AppState {
 
   // Environment (which AgentArea deployment); threads are kept per environment
   env: Environment;
-  setEnv: (id: string) => void;
+  setEnv: (apiBaseUrl: string) => void;
 
   // Auth
   auth: { status: AuthStatus; user: { email: string } | null; error: string | null };
   login: () => Promise<void>;
   logout: () => void;
-  devComplete: () => void;
+  continueWithoutSignIn: () => void;
   /** Read the saved sign-in from the keychain again (after a denied or cancelled prompt). */
   retrySignIn: () => void;
 
@@ -255,6 +275,10 @@ export const useAppStore = create<AppState>((set, get) => {
   // Sign back in from the keychain on start (and after switching environment):
   // a refresh token outlives restarts, so the user isn't asked to log in again.
   const restore = async () => {
+    if (withoutSignIn()) {
+      set({ auth: { status: 'authenticated', user: null, error: null } });
+      return;
+    }
     set({ auth: { status: 'authenticating', user: null, error: null } });
     let saved: Awaited<ReturnType<typeof restoreSession>>;
     try {
@@ -287,9 +311,9 @@ export const useAppStore = create<AppState>((set, get) => {
       set((s) => ({ settings: { theme: s.settings.theme === 'dark' ? 'light' : 'dark' } })),
 
     env: currentEnv(),
-    setEnv: (id) => {
+    setEnv: (apiBaseUrl) => {
       if (get().auth.status === 'authenticating') return;
-      saveEnv(id);
+      saveEnv(apiBaseUrl);
       dropSession();
       activeWorkspace = savedWorkspace();
       setWorkspaceRef(activeWorkspace);
@@ -406,6 +430,7 @@ export const useAppStore = create<AppState>((set, get) => {
     },
 
     logout: () => {
+      setWithoutSignIn(false);
       void clearSession();
       set({
         auth: { status: 'unauthenticated', user: null, error: null },
@@ -415,9 +440,10 @@ export const useAppStore = create<AppState>((set, get) => {
 
     retrySignIn: () => void restore(),
 
-    devComplete: () => {
-      set({ auth: { status: 'authenticated', user: { email: 'you@agentarea.dev' }, error: null } });
-      void get().connect();
+    // Local use: runners on this machine, no workspace. Remembered across launches.
+    continueWithoutSignIn: () => {
+      setWithoutSignIn(true);
+      set({ auth: { status: 'authenticated', user: null, error: null } });
     },
 
     connection: 'offline',

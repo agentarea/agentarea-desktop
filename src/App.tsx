@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Moon,
   Sun,
+  LogIn,
   LogOut,
   X,
   SquarePen,
@@ -1001,13 +1002,14 @@ function AccountMenu() {
   const connect = useAppStore((s) => s.connect);
   const envLabel = useAppStore((s) => s.env.label);
   const conn = CONNECTION[status];
-  const problem = status !== 'connected';
+  const signedIn = Boolean(email);
+  const problem = signedIn && status !== 'connected';
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
           aria-label={problem ? `Account — ${conn.label}` : 'Account'}
-          title={problem ? `${envLabel} · ${conn.label}` : (email ?? 'Account')}
+          title={problem ? `${envLabel} · ${conn.label}` : (email ?? 'Not signed in')}
           className="absolute right-3 flex size-7 items-center justify-center rounded-full bg-foreground/[0.07] text-[11px] font-semibold text-foreground/70 outline-none transition-colors hover:bg-foreground/[0.11] focus-visible:ring-2 focus-visible:ring-ring/50 hover:text-foreground data-[state=open]:bg-foreground/[0.13]"
         >
           {emailInitials(email)}
@@ -1018,23 +1020,29 @@ function AccountMenu() {
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" sideOffset={6} className="w-60">
         <div className="flex flex-col gap-1 px-2 py-1.5">
-          {email && <span className="truncate text-[13px] font-medium text-foreground">{email}</span>}
-          <span className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted-foreground">
-            <span className={cn('size-1.5 shrink-0 rounded-full', conn.dot, status === 'connecting' && 'animate-pulse')} />
-            <span className="truncate">
-              {envLabel} · {conn.label}
-            </span>
-          </span>
-          {status === 'offline' && connectionError && (
-            <span className="text-[11px] break-words text-destructive">{connectionError}</span>
-          )}
-          {status === 'offline' && (
-            <button
-              className="self-start text-[11.5px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
-              onClick={() => void connect()}
-            >
-              Reconnect
-            </button>
+          {signedIn ? (
+            <>
+              <span className="truncate text-[13px] font-medium text-foreground">{email}</span>
+              <span className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted-foreground">
+                <span className={cn('size-1.5 shrink-0 rounded-full', conn.dot, status === 'connecting' && 'animate-pulse')} />
+                <span className="truncate">
+                  {envLabel} · {conn.label}
+                </span>
+              </span>
+              {status === 'offline' && connectionError && (
+                <span className="text-[11px] break-words text-destructive">{connectionError}</span>
+              )}
+              {status === 'offline' && (
+                <button
+                  className="self-start text-[11.5px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+                  onClick={() => void connect()}
+                >
+                  Reconnect
+                </button>
+              )}
+            </>
+          ) : (
+            <span className="text-[13px] font-medium text-foreground">Not signed in</span>
           )}
         </div>
         <DropdownMenuSeparator />
@@ -1050,8 +1058,8 @@ function AccountMenu() {
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={logout}>
-          <LogOut />
-          Sign out
+          {signedIn ? <LogOut /> : <LogIn />}
+          {signedIn ? 'Sign out' : 'Sign in'}
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
