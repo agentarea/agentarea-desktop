@@ -62,14 +62,16 @@ export function LoginScreen() {
             </div>
           )}
 
-          <button
-            onClick={continueWithoutSignIn}
-            disabled={busy}
-            className="mt-6 text-xs text-muted-foreground/70 underline-offset-4 hover:underline disabled:opacity-50"
-          >
-            Continue without signing in
-          </button>
         </div>
+      </div>
+      <div className="shrink-0 pb-6 text-center">
+        <button
+          onClick={continueWithoutSignIn}
+          disabled={busy}
+          className="text-xs text-muted-foreground/70 underline-offset-4 hover:underline disabled:opacity-50"
+        >
+          Continue without signing in
+        </button>
       </div>
     </div>
   );
