@@ -43,6 +43,7 @@ import { RunnerBadge, RUNNER_LABEL } from '@/assets/icons';
 import { leaves, threadIds, usePanes, type Node } from '@/lib/panes';
 import { defaultGroupName, useGroups } from '@/lib/groups';
 import { useAppStore } from '@/store';
+import type { Workspace as WorkspaceInfo } from '@/lib/api';
 
 export default function App() {
   const theme = useAppStore((s) => s.settings.theme);
@@ -599,6 +600,23 @@ function hue(id: string): number {
   return h;
 }
 
+function WorkspaceAvatar({ workspace: w, active }: { workspace: WorkspaceInfo; active: boolean }) {
+  const [broken, setBroken] = useState<string | null>(null);
+  const logo = w.logoUrl && w.logoUrl !== broken ? w.logoUrl : null;
+  return (
+    <span
+      style={logo ? undefined : { backgroundColor: `hsl(${hue(w.id)} 30% ${active ? 38 : 55}%)` }}
+      className={cn(
+        'flex size-9 items-center justify-center overflow-hidden rounded-xl text-[12px] font-semibold text-white transition-all',
+        logo && 'bg-background',
+        active ? 'ring-2 ring-foreground/15 ring-offset-2 ring-offset-sidebar' : 'opacity-80 group-hover:opacity-100',
+      )}
+    >
+      {logo ? <img src={logo} alt="" className="size-full object-cover" onError={() => setBroken(logo)} /> : initials(w.name)}
+    </span>
+  );
+}
+
 function WorkspaceRail() {
   const workspaces = useAppStore((s) => s.workspaces);
   const workspaceId = useAppStore((s) => s.workspaceId);
@@ -626,15 +644,7 @@ function WorkspaceRail() {
                       active ? 'h-6' : 'h-0 group-hover:h-2.5',
                     )}
                   />
-                  <span
-                    style={{ backgroundColor: `hsl(${hue(w.id)} 30% ${active ? 38 : 55}%)` }}
-                    className={cn(
-                      'flex size-9 items-center justify-center rounded-xl text-[12px] font-semibold text-white transition-all',
-                      active ? 'ring-2 ring-foreground/15 ring-offset-2 ring-offset-sidebar' : 'opacity-80 group-hover:opacity-100',
-                    )}
-                  >
-                    {initials(w.name)}
-                  </span>
+                  <WorkspaceAvatar workspace={w} active={active} />
                 </button>
               </TooltipTrigger>
               <TooltipContent side="right">
