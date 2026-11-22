@@ -75,7 +75,8 @@ try {
 /** the left column (workspace rail + sidebar): 'open' or 'closed' (⌘B) */
 const NAV_KEY = 'aa.sidebar';
 const SIDEBAR_WIDTH = 260;
-const RAIL_WIDTH = 60;
+// Wide enough to hold the macOS traffic lights, which sit over its top.
+const RAIL_WIDTH = 72;
 
 function load<T>(key: string, valid: readonly T[], fallback: T): T {
   try {
@@ -600,16 +601,15 @@ function hue(id: string): number {
   return h;
 }
 
-function WorkspaceAvatar({ workspace: w, active }: { workspace: WorkspaceInfo; active: boolean }) {
+function WorkspaceAvatar({ workspace: w }: { workspace: WorkspaceInfo }) {
   const [broken, setBroken] = useState<string | null>(null);
   const logo = w.logoUrl && w.logoUrl !== broken ? w.logoUrl : null;
   return (
     <span
-      style={logo ? undefined : { backgroundColor: `hsl(${hue(w.id)} 30% ${active ? 38 : 55}%)` }}
+      style={logo ? undefined : { backgroundColor: `hsl(${hue(w.id)} 38% 50%)` }}
       className={cn(
-        'flex size-9 items-center justify-center overflow-hidden rounded-xl text-[12px] font-semibold text-white transition-all',
-        logo && 'bg-background',
-        active ? 'ring-2 ring-foreground/15 ring-offset-2 ring-offset-sidebar' : 'opacity-80 group-hover:opacity-100',
+        'flex size-10 items-center justify-center overflow-hidden rounded-[12px] text-[13px] font-semibold text-white transition-transform group-active:scale-95',
+        logo && 'bg-white ring-1 ring-black/10 ring-inset',
       )}
     >
       {logo ? <img src={logo} alt="" className="size-full object-cover" onError={() => setBroken(logo)} /> : initials(w.name)}
@@ -625,7 +625,9 @@ function WorkspaceRail() {
   if (workspaces.length < 2) return null;
 
   return (
-    <nav className="flex w-[60px] shrink-0 flex-col items-center gap-2 border-r border-border bg-sidebar pt-[52px] pb-3">
+    <nav style={{ width: RAIL_WIDTH }} className="relative flex shrink-0 flex-col items-center gap-2.5 bg-sidebar pb-3">
+      <div data-tauri-drag-region className="h-[52px] w-full shrink-0" />
+      <span aria-hidden className="pointer-events-none absolute top-[52px] right-0 bottom-0 w-px bg-border" />
       <TooltipProvider>
         {workspaces.map((w, i) => {
           const active = w.id === workspaceId;
@@ -640,11 +642,11 @@ function WorkspaceRail() {
                 >
                   <span
                     className={cn(
-                      'absolute -left-[14px] w-1 rounded-r-full bg-foreground transition-all',
-                      active ? 'h-6' : 'h-0 group-hover:h-2.5',
+                      'absolute -left-4 w-1 rounded-r-full bg-foreground transition-all',
+                      active ? 'h-7' : 'h-0 group-hover:h-3',
                     )}
                   />
-                  <WorkspaceAvatar workspace={w} active={active} />
+                  <WorkspaceAvatar workspace={w} />
                 </button>
               </TooltipTrigger>
               <TooltipContent side="right">
@@ -1019,8 +1021,10 @@ const CONNECTION = {
 } as const;
 
 /** "ada.lovelace@x.io" → "AL", "you@x.io" → "Y" */
-function emailInitials(email: string | undefined): string {
-  const parts = (email ?? '').split('@')[0].split(/[._+-]+/).filter(Boolean);
+function userInitials(name: string | undefined, email: string | undefined): string {
+  const parts = name?.trim()
+    ? name.trim().split(/\s+/)
+    : (email ?? '').split('@')[0].split(/[._+-]+/).filter(Boolean);
   return ((parts[0]?.[0] ?? '?') + (parts[1]?.[0] ?? '')).toUpperCase();
 }
 
@@ -1033,6 +1037,7 @@ function AccountMenu() {
   const toggleTheme = useAppStore((s) => s.toggleTheme);
   const logout = useAppStore((s) => s.logout);
   const email = useAppStore((s) => s.auth.user?.email);
+  const name = useAppStore((s) => s.auth.user?.name);
   const status = useAppStore((s) => s.connection);
   const connectionError = useAppStore((s) => s.connectionError);
   const connect = useAppStore((s) => s.connect);
@@ -1045,10 +1050,10 @@ function AccountMenu() {
       <DropdownMenuTrigger asChild>
         <button
           aria-label={problem ? `Account — ${conn.label}` : 'Account'}
-          title={problem ? `${envLabel} · ${conn.label}` : (email ?? 'Not signed in')}
+          title={problem ? `${envLabel} · ${conn.label}` : (name ?? email ?? 'Not signed in')}
           className="absolute right-3 flex size-7 items-center justify-center rounded-full bg-foreground/[0.07] text-[11px] font-semibold text-foreground/70 outline-none transition-colors hover:bg-foreground/[0.11] focus-visible:ring-2 focus-visible:ring-ring/50 hover:text-foreground data-[state=open]:bg-foreground/[0.13]"
         >
-          {emailInitials(email)}
+          {userInitials(name, email)}
           {problem && (
             <span className={cn('absolute -right-px -bottom-px size-2.5 rounded-full ring-2 ring-background', conn.dot)} />
           )}
@@ -1058,7 +1063,8 @@ function AccountMenu() {
         <div className="flex flex-col gap-1 px-2 py-1.5">
           {signedIn ? (
             <>
-              <span className="truncate text-[13px] font-medium text-foreground">{email}</span>
+              <span className="truncate text-[13px] font-medium text-foreground">{name ?? email}</span>
+              {name && <span className="truncate text-[11.5px] text-muted-foreground">{email}</span>}
               <span className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted-foreground">
                 <span className={cn('size-1.5 shrink-0 rounded-full', conn.dot, status === 'connecting' && 'animate-pulse')} />
                 <span className="truncate">
