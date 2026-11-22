@@ -12,7 +12,6 @@ import {
   LayoutGrid,
   Pencil,
   PanelLeft,
-  RefreshCw,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -44,7 +43,6 @@ import { RunnerBadge, RUNNER_LABEL } from '@/assets/icons';
 import { leaves, threadIds, usePanes, type Node } from '@/lib/panes';
 import { defaultGroupName, useGroups } from '@/lib/groups';
 import { useAppStore } from '@/store';
-import { useUpdates } from '@/lib/updates';
 import type { Workspace as WorkspaceInfo } from '@/lib/api';
 
 export default function App() {
@@ -1040,8 +1038,6 @@ function AccountMenu() {
   const logout = useAppStore((s) => s.logout);
   const email = useAppStore((s) => s.auth.user?.email);
   const name = useAppStore((s) => s.auth.user?.name);
-  const checkForUpdates = useUpdates((s) => s.check);
-  const appVersion = useUpdates((s) => s.version);
   const status = useAppStore((s) => s.connection);
   const connectionError = useAppStore((s) => s.connectionError);
   const connect = useAppStore((s) => s.connect);
@@ -1101,11 +1097,6 @@ function AccountMenu() {
         >
           {theme === 'dark' ? <Sun /> : <Moon />}
           {theme === 'dark' ? 'Light mode' : 'Dark mode'}
-        </DropdownMenuItem>
-        <DropdownMenuItem onSelect={() => void checkForUpdates(true)}>
-          <RefreshCw />
-          Check for updates…
-          {appVersion && <span className="ml-auto text-[11px] text-muted-foreground">{appVersion}</span>}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={logout}>

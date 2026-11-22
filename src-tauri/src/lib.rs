@@ -750,6 +750,24 @@ fn write_private(path: &std::path::Path, contents: &str) -> std::io::Result<()> 
     opts.open(path)?.write_all(contents.as_bytes())
 }
 
+const CHECK_FOR_UPDATES: &str = "check-for-updates";
+
+/// Tauri's default menu plus "Check for Updates…": under About in the app menu
+/// on macOS, in Help elsewhere. The webview runs the check (see lib/updates.ts).
+fn app_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{Menu, MenuItem};
+    let menu = Menu::default(app)?;
+    let item = MenuItem::with_id(app, CHECK_FOR_UPDATES, "Check for Updates…", true, None::<&str>)?;
+    #[cfg(target_os = "macos")]
+    let (submenu, position) = (menu.items()?.first().and_then(|i| i.as_submenu().cloned()), 1);
+    #[cfg(not(target_os = "macos"))]
+    let (submenu, position) = (menu.get(tauri::menu::HELP_SUBMENU_ID).and_then(|i| i.as_submenu().cloned()), 0);
+    if let Some(submenu) = submenu {
+        submenu.insert(&item, position)?;
+    }
+    Ok(menu)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -762,6 +780,12 @@ pub fn run() {
         // The vault's MCP server lives as long as the app; without it agents
         // just don't get secret tools.
         .setup(|app| {
+            app.set_menu(app_menu(app.handle())?)?;
+            app.on_menu_event(|app, event| {
+                if event.id() == CHECK_FOR_UPDATES {
+                    let _ = app.emit(CHECK_FOR_UPDATES, ());
+                }
+            });
             let handle = app.handle().clone();
             app.manage(runners::Runners::new(Arc::new(move |session_id, event| emit_agent(&handle, session_id, event))));
             // Approved plugin backends run from read-only copies in the app's own data.

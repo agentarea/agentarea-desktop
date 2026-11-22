@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { check, type Update } from '@tauri-apps/plugin-updater';
 import { getVersion } from '@tauri-apps/api/app';
+import { listen } from '@tauri-apps/api/event';
 
 type Status = 'idle' | 'checking' | 'available' | 'latest' | 'failed';
 
@@ -39,3 +40,7 @@ export const useUpdates = create<UpdatesState>((set, get) => ({
 void getVersion()
   .then((version) => useUpdates.setState({ version }))
   .catch(() => undefined); // not running inside Tauri
+
+// "Check for Updates…" in the app menu (src-tauri/src/lib.rs app_menu).
+const unlisten = listen('check-for-updates', () => void useUpdates.getState().check(true)).catch(() => undefined);
+import.meta.hot?.dispose(() => void unlisten.then((off) => off?.()));
