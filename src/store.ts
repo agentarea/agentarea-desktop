@@ -13,6 +13,7 @@ import {
   dropSession,
   freshAccessToken,
   onSessionExpired,
+  KeychainError,
 } from './lib/session';
 import {
   listAgents,
@@ -64,9 +65,13 @@ interface AppState {
   login: () => Promise<void>;
   logout: () => void;
   devComplete: () => void;
+  /** Read the saved sign-in from the keychain again (after a denied or cancelled prompt). */
+  retrySignIn: () => void;
 
   // Control plane
   connection: ConnectionStatus;
+  /** why the last connect failed, shown next to "Offline" */
+  connectionError: string | null;
   mcps: CatalogItem[];
   skills: CatalogItem[];
   agents: CatalogItem[];
@@ -101,7 +106,8 @@ interface AppState {
   /** Stop the running local turn */
   stop: (sessionId: string) => Promise<void>;
   select: (id: string | null) => void;
-  newSession: () => Promise<void>;
+  /** open a new thread; an untouched one is reused unless listed in `exclude` */
+  newSession: (exclude?: string[]) => Promise<void>;
   setRunner: (sessionId: string, runner: Runner, agent?: CatalogItem) => void;
   /** model / effort for the next turns of a local thread; null = default */
   setModel: (sessionId: string, model: string | null) => void;
@@ -133,6 +139,8 @@ function savedWorkspace(): string | null {
 let activeWorkspace: string | null = savedWorkspace();
 const legacySessionsKey = () => `aa.sessions:${config.apiBaseUrl}`;
 const sessionsKey = () => `aa.sessions:${config.apiBaseUrl}:${activeWorkspace ?? 'default'}`;
+/** saved split layouts (src/lib/groups.ts) belong to the same workspace as the threads in them */
+export const groupsKey = () => `aa.groups:${config.apiBaseUrl}:${activeWorkspace ?? 'default'}`;
 
 function loadSessions(): Session[] {
   try {
@@ -179,6 +187,14 @@ function serial(key: string, job: () => Promise<void>): Promise<void> {
   const next = (queues.get(key) ?? Promise.resolve()).then(job, job);
   queues.set(key, next);
   return next;
+}
+
+/** What to tell the user when the keychain won't give back the saved sign-in. */
+function keychainHint(detail: string): string {
+  const cancelled = /cancel|denied|-128|-25293/i.test(detail);
+  return cancelled
+    ? 'macOS Keychain access was cancelled, so your saved sign-in could not be read. Click "Try again" and choose "Always Allow" for AgentArea Desktop.'
+    : `Could not read your saved sign-in from the macOS Keychain (${detail}). Click "Try again" or sign in.`;
 }
 
 export const useAppStore = create<AppState>((set, get) => {
@@ -240,7 +256,14 @@ export const useAppStore = create<AppState>((set, get) => {
   // a refresh token outlives restarts, so the user isn't asked to log in again.
   const restore = async () => {
     set({ auth: { status: 'authenticating', user: null, error: null } });
-    const saved = await restoreSession();
+    let saved: Awaited<ReturnType<typeof restoreSession>>;
+    try {
+      saved = await restoreSession();
+    } catch (e) {
+      const why = e instanceof KeychainError ? keychainHint(e.message) : String(e);
+      set({ auth: { status: 'unauthenticated', user: null, error: why } });
+      return;
+    }
     if (!saved || !(await freshAccessToken())) {
       set({ auth: { status: 'unauthenticated', user: null, error: null } });
       return;
@@ -390,6 +413,8 @@ export const useAppStore = create<AppState>((set, get) => {
       });
     },
 
+    retrySignIn: () => void restore(),
+
     devComplete: () => {
       set({ auth: { status: 'authenticated', user: { email: 'you@agentarea.dev' }, error: null } });
       void get().connect();
@@ -400,6 +425,7 @@ export const useAppStore = create<AppState>((set, get) => {
     skills: [],
     agents: [],
 
+    connectionError: null,
     connect: async () => {
       set({ connection: 'connecting' });
       try {
@@ -413,10 +439,12 @@ export const useAppStore = create<AppState>((set, get) => {
         }
         set({ workspaces, workspaceId: keep?.id ?? null });
         const [mcps, skills, agents] = await Promise.all([listMcpInstances(), listSkills(), listAgents()]);
-        set({ connection: 'connected', mcps, skills, agents });
+        set({ connection: 'connected', connectionError: null, mcps, skills, agents });
         void get().loadInbox();
-      } catch {
-        set({ connection: 'offline' });
+      } catch (e) {
+        const why = e instanceof Error ? e.message : String(e);
+        console.warn('connect failed:', why);
+        set({ connection: 'offline', connectionError: why });
       }
     },
 
@@ -509,9 +537,10 @@ export const useAppStore = create<AppState>((set, get) => {
     },
     select: (id) => set({ selectedId: id }),
 
-    newSession: async () => {
-      // An untouched thread is reused instead of piling up empty ones.
-      const blank = get().sessions.find((s) => s.messages.length === 0 && !s.clientId);
+    newSession: async (exclude = []) => {
+      // An untouched thread is reused instead of piling up empty ones (but not
+      // one already open in another pane).
+      const blank = get().sessions.find((s) => s.messages.length === 0 && !s.clientId && !exclude.includes(s.id));
       if (blank) return set({ selectedId: blank.id });
       const session: Session = {
         id: newId(),
@@ -674,8 +703,9 @@ export const useAppStore = create<AppState>((set, get) => {
             cwd: session.cwd,
             model: session.model,
             effort: session.effort,
-            // Cloud data sources: the agent reads workspace files as this user.
-            workspace: get().workspaceId,
+            // Cloud data sources: the agent reads workspace files as this user,
+            // under /v1/workspaces/{slug}/ (the API selects the workspace by path).
+            workspace: get().workspaces.find((w) => w.id === get().workspaceId)?.slug ?? null,
             workspaceName: get().workspaces.find((w) => w.id === get().workspaceId)?.name ?? null,
             apiBase: config.apiBaseUrl,
             toolsKey: [...session.mcpIds, ...session.skillIds].sort().join(','),

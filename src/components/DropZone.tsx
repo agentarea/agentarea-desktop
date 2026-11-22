@@ -5,17 +5,15 @@ import { useAppStore } from '@/store';
 /**
  * Wires the Tauri webview's native drag & drop exactly once, and reports
  * which thread (if any) the pointer is currently dragging files over: the
- * whole thread in Focus, or whichever tile is under the cursor in Grid
- * (hit-tested via `data-session-id`). Local runners only. A plain `vite`
- * browser has no Tauri webview, so this is a silent no-op there.
+ * pane under the cursor (hit-tested via `data-session-id`), else the focused
+ * thread. Local runners only. A plain `vite` browser has no Tauri webview,
+ * so this is a silent no-op there.
  */
-export function useDragDropTarget(activeSessionId: string | null, grid: boolean): string | null {
+export function useDragDropTarget(activeSessionId: string | null): string | null {
   const attachFiles = useAppStore((s) => s.attachFiles);
   const [overId, setOverId] = useState<string | null>(null);
   const activeRef = useRef(activeSessionId);
-  const gridRef = useRef(grid);
   activeRef.current = activeSessionId;
-  gridRef.current = grid;
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -33,7 +31,7 @@ export function useDragDropTarget(activeSessionId: string | null, grid: boolean)
       return (el as HTMLElement | null)?.closest<HTMLElement>('[data-session-id]')?.dataset.sessionId ?? null;
     };
 
-    const targetFor = (pos: { x: number; y: number }) => localTarget(gridRef.current ? hitTest(pos) : activeRef.current);
+    const targetFor = (pos: { x: number; y: number }) => localTarget(hitTest(pos) ?? activeRef.current);
 
     void (async () => {
       try {

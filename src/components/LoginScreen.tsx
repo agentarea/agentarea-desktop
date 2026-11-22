@@ -14,6 +14,7 @@ export function LoginScreen() {
   const error = useAppStore((s) => s.auth.error);
   const login = useAppStore((s) => s.login);
   const devComplete = useAppStore((s) => s.devComplete);
+  const retrySignIn = useAppStore((s) => s.retrySignIn);
   const busy = status === 'authenticating';
 
   return (
@@ -47,7 +48,16 @@ export function LoginScreen() {
             </p>
           )}
 
-          {error && <p className="mt-3 text-xs text-destructive">{error}</p>}
+          {error && (
+            <div className="mt-3 text-xs text-destructive">
+              <p>{error}</p>
+              {/Keychain/.test(error) && (
+                <Button variant="outline" size="sm" onClick={retrySignIn} disabled={busy} className="mt-2 rounded-full">
+                  Try again
+                </Button>
+              )}
+            </div>
+          )}
 
           {/* Dev-only shortcut until you want to always go through the browser. */}
           <button

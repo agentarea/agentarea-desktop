@@ -39,6 +39,7 @@
   --color-chart-4: var(--chart-4);
   --color-chart-5: var(--chart-5);
   --color-sidebar: var(--sidebar);
+  --color-drop: var(--drop);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-worktree-sidebar: var(--worktree-sidebar);
   --color-worktree-sidebar-foreground: var(--worktree-sidebar-foreground);
@@ -129,6 +130,8 @@
   --input: #ececec;
   --ring: #c7c7c7;
   --terminal-pane-locate: var(--color-blue-600);
+  /* split view: where a dragged thread will land */
+  --drop: #2f7cf6;
   --ai-action-accent: #8f8f8f;
   --status-success: #15803d;
   --status-success-background: color-mix(in srgb, var(--status-success) 10%, transparent);
@@ -210,6 +213,7 @@
   --input: rgb(255 255 255 / 0.15);
   --ring: #737373;
   --terminal-pane-locate: var(--color-blue-400);
+  --drop: #5b9bff;
   --ai-action-accent: #a1a1a1;
   --status-success: #86efac;
   --status-success-background: color-mix(in srgb, var(--status-success) 10%, transparent);
@@ -325,4 +329,21 @@ body {
   transform: translateY(2px);
   background: color-mix(in oklab, var(--foreground) 50%, transparent);
   animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Dragging a thread or resizing panes: one cursor everywhere, no text selection. */
+body.pane-dragging,
+body.pane-dragging * {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+body.pane-resizing-row,
+body.pane-resizing-row * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+body.pane-resizing-col,
+body.pane-resizing-col * {
+  cursor: row-resize !important;
+  user-select: none !important;
 }

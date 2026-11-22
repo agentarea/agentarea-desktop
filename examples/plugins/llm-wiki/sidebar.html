@@ -2,12 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<title>Context</title>
 <style>
   :root { --fg:#0d0d0d; --muted:#8f8f8f; --hover:#efefef; --active:#e8e8e8; --line:#e6e6e6;
-          --local:#5c5c5c; --local-bg:#efefef; --cloud:#2563eb; --cloud-bg:#e9f0fe; }
+          --local:#5c5c5c; --local-bg:#efefef; --cloud:#2563eb; --cloud-bg:#e9f0fe; --card:#fff; }
   @media (prefers-color-scheme: dark) {
     :root { --fg:#ececec; --muted:#8a8a8a; --hover:#2a2a2a; --active:#333; --line:#333;
-            --local:#b5b5b5; --local-bg:#2c2c2c; --cloud:#7aa7ff; --cloud-bg:rgba(59,130,246,.18); }
+            --local:#b5b5b5; --local-bg:#2c2c2c; --cloud:#7aa7ff; --cloud-bg:rgba(59,130,246,.18); --card:#1f1f1f; }
   }
   html, body { margin:0; background:transparent; color:var(--fg); font:13px/1.35 -apple-system, system-ui, sans-serif; }
   body { padding:0 10px 10px; }
@@ -43,9 +44,21 @@
   .muted { color:var(--muted); font-size:12px; padding:4px 6px 4px 22px; }
   .pick { padding:2px 6px 4px 22px; }
   .rootedit { display:flex; gap:4px; padding:2px 6px 4px 22px; }
+
+  /* granted folder header */
+  .folder { position:sticky; top:0; z-index:1; display:flex; align-items:center; gap:8px; margin:0 0 6px; padding:7px 6px 7px 8px; border:1px solid var(--line); border-radius:8px; background:var(--card); }
+  .folder .fic { flex:none; display:inline-flex; color:var(--muted); }
+  .folder .fic svg { width:15px; height:15px; }
+  .folder .ftext { flex:1; min-width:0; line-height:1.25; }
+  .folder .fname { font-weight:560; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .ibtn { flex:none; display:inline-flex; align-items:center; justify-content:center; width:22px; height:22px; border:0; padding:0; border-radius:5px; background:transparent; color:var(--muted); cursor:pointer; }
+  .ibtn:hover { background:var(--hover); color:var(--fg); }
+  .ibtn svg { width:14px; height:14px; }
+  .folder button.choose { padding:4px 9px; }
 </style>
 </head>
 <body>
+<div class="folder" id="folder"><span class="fic"></span><div class="ftext"><div class="fname">Loading…</div></div></div>
 <div class="bar"><input id="q" placeholder="Filter local and cloud pages…" autocomplete="off"></div>
 <div id="tree" class="muted">Loading…</div>
 <script src="bridge.js"></script>
@@ -54,6 +67,8 @@
     local: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="3" width="11" height="7.5" rx="1"/><path d="M1 13h14"/></svg>',
     cloud: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12.5h7a3 3 0 0 0 .4-5.97A4 4 0 0 0 4.2 6.6 3 3 0 0 0 4.5 12.5z"/></svg>',
     folder: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M1.75 4.25a1 1 0 0 1 1-1h3.1l1.4 1.5h5.99a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1H2.75a1 1 0 0 1-1-1z"/></svg>',
+    reveal: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2.5h4v4"/><path d="M13.5 2.5 8 8"/><path d="M12 9.5v3a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3"/></svg>',
+    change: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 5.5h9l-2.5-2.5"/><path d="M13.5 10.5h-9l2.5 2.5"/></svg>',
     file: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M4 1.75h5.25L12.5 5v9.25H4z"/><path d="M9 1.75V5.25h3.5"/></svg>',
   };
   const tree = document.getElementById('tree');
@@ -124,16 +139,43 @@
 
   async function pickLocal() { await aa('fs.pickRoot'); SRC.local.children.clear(); render(); }
 
+  // Header: the granted folder — its name only (full path on hover), change / reveal.
+  const folderEl = document.getElementById('folder');
+  const tilde = (p) => p.replace(/^\/Users\/[^/]+(?=\/|$)/, '~');
+  function renderFolder(root) {
+    folderEl.replaceChildren();
+    folderEl.appendChild(el('span', 'fic', ICON.folder));
+    const text = el('div', 'ftext');
+    const name = el('div', 'fname');
+    name.textContent = root ? basename(root) : 'No local folder';
+    text.appendChild(name);
+    folderEl.appendChild(text);
+    folderEl.title = root ? `Context folder: ${tilde(root)}` : 'No local folder yet — agents see only the cloud files';
+    const btn = (icon, label, fn) => {
+      const b = el('button', 'ibtn', ICON[icon]);
+      b.title = label; b.setAttribute('aria-label', label);
+      b.onclick = async () => { try { await fn(); } catch (err) { b.title = `${label} — ${err.message}`; } };
+      folderEl.appendChild(b);
+    };
+    if (root) {
+      btn('reveal', 'Reveal in Finder', () => aa('fs.reveal', { path: '' }));
+      btn('change', 'Change folder…', pickLocal);
+    } else {
+      const b = el('button', 'choose'); b.textContent = 'Choose folder'; b.onclick = pickLocal;
+      folderEl.appendChild(b);
+    }
+  }
+
   async function renderLocal(into) {
     const { path: root } = await aa('fs.root');
+    renderFolder(root);
     const g = el('div', 'group');
-    g.appendChild(head('local', root ? `<b>${escHtml(basename(root))}</b>` : 'no folder yet',
-      root ? [['⋯', `Change folder (${root})`, pickLocal]] : []));
+    g.appendChild(head('local', root ? `<b>${escHtml(basename(root))}</b>` : 'no folder yet', []));
     g.firstChild.title = root ? `On this device: ${root}` : 'On this device';
     if (!SRC.local.collapsed) {
       if (!root) {
-        g.appendChild(muted('Pick the folder that holds your LLM wiki.'));
-        const p = el('div', 'pick', '<button>Choose wiki folder</button>');
+        g.appendChild(muted('Pick the local folder the agents should see.'));
+        const p = el('div', 'pick', '<button>Choose folder</button>');
         p.querySelector('button').onclick = pickLocal;
         g.appendChild(p);
       } else {

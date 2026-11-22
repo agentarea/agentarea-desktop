@@ -1,12 +1,31 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
-import { Moon, Sun, LogOut, X, SquarePen, AppWindow, Puzzle, Inbox, KeyRound, ChevronDown, ChevronRight } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  Moon,
+  Sun,
+  LogOut,
+  X,
+  SquarePen,
+  AppWindow,
+  Puzzle,
+  Inbox,
+  KeyRound,
+  LayoutGrid,
+  Pencil,
+  PanelLeft,
+} from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { LoginScreen } from '@/components/LoginScreen';
-import { Composer } from '@/components/Composer';
-import { AgentGrid } from '@/components/AgentGrid';
+import { UpdateBanner } from '@/components/UpdateBanner';
+import { DragLayer, SplitView, startPaneDrag, startThreadDrag, useContentTitle } from '@/components/SplitView';
 import { AppsPanel, PluginsPanel } from '@/components/AppsPanel';
 import { InboxView } from '@/components/InboxView';
 import { AppView } from '@/components/AppView';
@@ -16,31 +35,39 @@ import { SecretsView } from '@/components/SecretsView';
 import { localInbox } from '@/lib/inbox';
 import { PluginFrame } from '@/components/PluginFrame';
 import { usePlugins } from '@/lib/plugins';
-import { useDragDropTarget, DropOverlay } from '@/components/DropZone';
-import { ThreadFolder } from '@/components/FileChip';
-import { ApprovalCard, DraftRow, groupMessages, MessageRow, ToolGroup } from '@/components/MessageView';
+import { useDragDropTarget } from '@/components/DropZone';
+import { PluginEntry, SectionHeader, SectionOrder, SidebarDragLayer, SidebarSection } from '@/components/SidebarSections';
+import { fillOrder, isCollapsed, isPluginSection, pluginSection, useSidebarLayout } from '@/lib/sidebarLayout';
 import { RunnerBadge, RUNNER_LABEL } from '@/assets/icons';
+import { leaves, threadIds, usePanes, type Node } from '@/lib/panes';
+import { defaultGroupName, useGroups } from '@/lib/groups';
 import { useAppStore } from '@/store';
-import type { Session } from './data';
 
 export default function App() {
   const theme = useAppStore((s) => s.settings.theme);
   const authStatus = useAppStore((s) => s.auth.status);
+  // On the root too: menus and tooltips are portalled outside the app's div.
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', theme === 'dark');
+  }, [theme]);
 
   return (
     <div className={cn('h-full', theme === 'dark' && 'dark')}>
       {authStatus === 'authenticated' ? <Workspace /> : <LoginScreen />}
+      <UpdateBanner />
     </div>
   );
 }
 
-/* ── View: threads (in 1–4 panes), a panel, or a plugin's own page ───── */
+/* ── View: threads (one, or up to four split), a panel, or a plugin's own page ───── */
 
 /** 'plugin-page': a page a plugin opened (ui.open), full-width; not persisted. */
 type ViewMode = 'threads' | 'inbox' | 'apps' | 'plugins' | 'secrets' | 'plugin-page' | 'app-page';
-type Panes = 1 | 2 | 3 | 4;
 const VIEW_KEY = 'aa.view';
-const PANES_KEY = 'aa.panes';
+/** the left column (workspace rail + sidebar): 'open' or 'closed' (⌘B) */
+const NAV_KEY = 'aa.sidebar';
+const SIDEBAR_WIDTH = 260;
+const RAIL_WIDTH = 60;
 
 function load<T>(key: string, valid: readonly T[], fallback: T): T {
   try {
@@ -72,48 +99,48 @@ function Workspace() {
   const select = useAppStore((s) => s.select);
   const newSession = useAppStore((s) => s.newSession);
   const [view, setView] = usePersisted<ViewMode>(VIEW_KEY, ['threads', 'inbox', 'apps', 'plugins', 'secrets'], 'threads');
-  const [panes, setPanes] = usePersisted<Panes>(PANES_KEY, [1, 2, 3, 4], 1);
-  // Panes are numbered slots (like tmux). A slot keeps its thread until you
-  // put another one there; empty slots fill with threads not on screen.
-  const [slots, setSlots] = useState<string[]>([]);
-  const [activeSlot, setActiveSlot] = useState(0);
-  // Pane count to return to after enlarging one thread (⌘↵ / Esc).
-  const [zoomedFrom, setZoomedFrom] = useState<Panes | null>(null);
-  const grid = view === 'threads' && panes > 1;
-  const overId = useDragDropTarget(selected?.id ?? null, grid);
+  const tree = usePanes((s) => s.tree);
+  const maximized = usePanes((s) => s.maximized);
+  const paneList = leaves(tree);
+  const split = view === 'threads' && paneList.length > 1 && !maximized;
+  const openIds = useMemo(() => new Set(threadIds(tree)), [tree]);
+  const sole = tree.kind === 'leaf' ? tree : maximized ? paneList.find((l) => l.key === maximized) : undefined;
+  const soleTitle = useContentTitle(sole?.content ?? null);
+  const groupOpen = useGroups((s) => !!s.activeId);
+  const overId = useDragDropTarget(selected?.id ?? null);
+  const [nav, setNav] = usePersisted<'open' | 'closed'>(NAV_KEY, ['open', 'closed'], 'open');
+  const navOpen = nav === 'open';
+  const toggleNav = () => setNav(navOpen ? 'closed' : 'open');
+  const railShown = useAppStore((s) => s.workspaces.length > 1);
 
-  const visible: Session[] = [];
-  {
-    const pinned = new Set(slots.slice(0, panes));
-    const spare = sessions.filter((s) => !pinned.has(s.id));
-    for (let i = 0; i < panes; i++) {
-      const s = sessions.find((x) => x.id === slots[i]) ?? spare.shift();
-      if (s) visible.push(s);
-    }
-  }
-  const slotOf = grid ? Object.fromEntries(visible.map((s, i) => [s.id, i + 1])) : {};
-  const active = Math.min(activeSlot, Math.max(visible.length - 1, 0));
-
-  // Whatever gets selected (sidebar click, new thread, plugin) and is not on
-  // screen lands in the active slot; if it is on screen, its slot becomes active.
+  // Whatever gets selected (sidebar click, new thread, inbox, plugin) lands in
+  // the focused pane, or focuses the pane already showing it.
   useEffect(() => {
-    if (!grid || !selected) return;
-    const i = visible.findIndex((s) => s.id === selected.id);
-    if (i >= 0) return setActiveSlot(i);
-    setSlots(() => {
-      const next = visible.map((s) => s.id);
-      next[active] = selected.id;
-      return next;
-    });
-  }, [selected?.id, grid]);
+    if (selected) usePanes.getState().show(selected.id);
+  }, [selected?.id]);
 
-  // One pane opens straight into a thread; several panes are fine with none.
+  // Threads just deleted (and another workspace's) leave their panes. Only
+  // those: a restored group's long-gone thread keeps its placeholder pane.
+  const knownIds = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (view === 'threads' && panes === 1 && !selected) void newSession();
-  }, [view, panes, selected, newSession]);
+    const ids = new Set(sessions.map((s) => s.id));
+    const gone = new Set([...knownIds.current].filter((id) => !ids.has(id)));
+    knownIds.current = ids;
+    if (gone.size) usePanes.getState().prune(gone);
+  }, [sessions]);
+
+  /** threads open in panes other than the focused one */
+  const otherPaneIds = () => threadIds(usePanes.getState().tree, usePanes.getState().focusedKey);
+
+  // The focused pane always shows a thread. Read live: closing a deleted
+  // thread's pane (above) may already have selected its neighbour.
+  useEffect(() => {
+    if (view === 'threads' && !useAppStore.getState().selectedId) void newSession(otherPaneIds());
+  }, [view, selected, newSession]);
 
   const openThread = (id: string) => {
     select(id);
+    usePanes.getState().show(id);
     setView('threads');
   };
 
@@ -131,16 +158,6 @@ function Workspace() {
     const t = setInterval(() => void loadInbox(), 30_000);
     return () => clearInterval(t);
   }, [connected, loadInbox]);
-  const zoomIn = (id: string | null) => {
-    if (id) select(id);
-    if (panes > 1) setZoomedFrom(panes);
-    setPanes(1);
-    setView('threads');
-  };
-  const zoomOut = () => {
-    if (zoomedFrom) setPanes(zoomedFrom);
-    setZoomedFrom(null);
-  };
 
   // A pinned app clicked in the sidebar: show it full-width.
   const openedApp = usePinnedApps((s) => s.opened);
@@ -161,49 +178,110 @@ function Workspace() {
     void usePlugins.getState().reload();
   }, []);
 
-  useHotkeys({
-    // ⌘T: a new thread in a new pane while there is room, otherwise in the
-    // active one — like a new browser tab — with its input focused.
-    newThread: () => {
-      if (grid && panes < 4) {
-        setActiveSlot(panes);
-        setPanes((panes + 1) as Panes);
-      }
-      newThread();
-      setTimeout(() => {
-        const id = useAppStore.getState().selectedId;
-        const el = document.querySelector<HTMLTextAreaElement>(
-          id ? `[data-session-id="${id}"] textarea, main textarea` : 'main textarea',
-        );
-        el?.focus();
-      }, 50);
-    },
-    panes: (n) => {
-      setZoomedFrom(null);
-      setPanes(n);
-      setView('threads');
-    },
-    toggleZoom: () => (panes === 1 && zoomedFrom ? zoomOut() : zoomIn(selected?.id ?? null)),
-    escape: () => panes === 1 && zoomedFrom && zoomOut(),
-    step: (dir) => {
-      // In panes, move between slots; in one pane, go through all threads.
-      const list = grid ? visible : sessions;
-      if (!list.length) return;
-      const i = list.findIndex((s) => s.id === selected?.id);
-      const next = list[(i + dir + list.length) % list.length];
-      if (grid) select(next.id);
-      else openThread(next.id);
-    },
-  });
+  // Focus the composer of the thread just opened.
+  const focusComposer = () =>
+    setTimeout(() => {
+      const id = useAppStore.getState().selectedId;
+      // One selector list would match whichever textarea comes first on the page.
+      const el =
+        (id && document.querySelector<HTMLTextAreaElement>(`[data-session-id="${id}"] textarea`)) ||
+        document.querySelector<HTMLTextAreaElement>('main textarea');
+      el?.focus();
+    }, 50);
   const newThread = () => {
-    void newSession();
+    // Shown explicitly: the store may reuse the selected thread, which an
+    // app pane can have pushed off screen.
+    void newSession(otherPaneIds()).then(() => {
+      const id = useAppStore.getState().selectedId;
+      if (id) usePanes.getState().show(id);
+    });
     setView('threads');
   };
 
+  // Dragging from the Apps panel or a full-page app/plugin: show the panes to
+  // drop on, and go back if the drag is cancelled.
+  const dragging = usePanes((s) => !!s.drag);
+  const beforeDrag = useRef<{ view: ViewMode; tree: Node } | null>(null);
+  useEffect(() => {
+    if (dragging) {
+      if (view === 'threads') return;
+      beforeDrag.current = { view, tree: usePanes.getState().tree };
+      setView('threads');
+    } else if (beforeDrag.current) {
+      const { view: prev, tree: before } = beforeDrag.current;
+      beforeDrag.current = null;
+      if (usePanes.getState().tree === before) setView(prev);
+    }
+  }, [dragging]);
+
+  const openGroup = (id: string) => {
+    useGroups.getState().open(id);
+    setView('threads');
+  };
+
+  useHotkeys({
+    // ⌘T: a new thread in the focused pane.
+    newThread: () => {
+      newThread();
+      focusComposer();
+    },
+    // ⌘\: a new thread beside the focused one, while there is room.
+    splitRight: () => {
+      const p = usePanes.getState();
+      if (view !== 'threads' || !p.split(p.focusedKey, 'right')) return;
+      void newSession(threadIds(p.tree));
+      focusComposer();
+    },
+    closePane: () => view === 'threads' && usePanes.getState().close(usePanes.getState().focusedKey),
+    focusPane: (n) => {
+      const l = leaves(usePanes.getState().tree)[n - 1];
+      if (!l) return;
+      usePanes.getState().focus(l.key);
+      setView('threads');
+    },
+    toggleMaximize: () => {
+      if (view === 'threads') usePanes.getState().toggleMaximize();
+    },
+    escape: () => maximized && usePanes.getState().toggleMaximize(),
+    toggleSidebar: toggleNav,
+    // ⌘S: name the split as a group (an open group already saves itself).
+    saveGroup: () => {
+      const g = useGroups.getState();
+      if (view === 'threads' && !g.activeId && paneList.length > 1) g.setNaming(true);
+    },
+    step: (dir) => {
+      // Split: move focus between panes. One pane: go through all threads.
+      if (split) {
+        const { focusedKey, focus } = usePanes.getState();
+        const i = paneList.findIndex((l) => l.key === focusedKey);
+        return focus(paneList[(i + dir + paneList.length) % paneList.length].key);
+      }
+      if (!sessions.length) return;
+      const i = sessions.findIndex((s) => s.id === selected?.id);
+      openThread(sessions[(i + dir + sessions.length) % sessions.length].id);
+    },
+  });
+
   return (
     <div className="flex h-full bg-background text-foreground">
-      <WorkspaceRail />
-      <Sidebar view={view} slotOf={slotOf} onChangeView={setView} onOpenThread={openThread} onNewThread={newThread} />
+      {/* Rail and sidebar fold away together (⌘B), like Codex: one navigation
+          column, and the content gets the whole window. */}
+      <div
+        inert={!navOpen}
+        style={{ width: navOpen ? SIDEBAR_WIDTH + (railShown ? RAIL_WIDTH : 0) : 0 }}
+        className="flex shrink-0 overflow-hidden transition-[width] duration-200 ease-out motion-reduce:transition-none"
+      >
+        <WorkspaceRail />
+        <Sidebar
+          view={view}
+          openIds={openIds}
+          onChangeView={setView}
+          onOpenThread={openThread}
+          onNewThread={newThread}
+          onOpenGroup={openGroup}
+        />
+      </div>
+      <SidebarToggle open={navOpen} onToggle={toggleNav} />
       <main className="flex min-w-0 flex-1 flex-col bg-background">
         <MainHeader
           title={
@@ -219,30 +297,19 @@ function Workspace() {
                   ? 'Secrets'
                 : view === 'plugin-page'
                   ? targetPlugin?.title
-                  : !grid && view === 'threads' && selected && selected.messages.length > 0
+                  : view !== 'threads' || !sole?.content
+                  ? undefined
+                  : sole.content.kind !== 'thread'
+                  ? soleTitle
+                  : selected && selected.messages.length > 0
                   ? selected.title
                   : undefined
           }
-          panes={view === 'threads' ? panes : null}
-          zoomed={zoomedFrom !== null}
-          onChangePanes={(n) => {
-            setZoomedFrom(null);
-            setPanes(n);
-            setView('threads');
-          }}
+          maximized={view === 'threads' && maximized !== null}
+          navOpen={navOpen}
+          group={view === 'threads' && (groupOpen || split) ? <GroupBar canSave={paneList.length > 1} /> : undefined}
         />
-        {grid && (
-          <AgentGrid
-            sessions={visible}
-            panes={panes as 2 | 3 | 4}
-            activeId={selected?.id ?? null}
-            overId={overId}
-            onActivate={select}
-            onOpenThread={zoomIn}
-            onNewThread={newThread}
-          />
-        )}
-        {view === 'threads' && panes === 1 && selected && <SessionBody session={selected} overId={overId} />}
+        {view === 'threads' && <SplitView overId={overId} />}
         {view === 'inbox' && <InboxView onOpenThread={openThread} />}
         {view === 'app-page' &&
           (shownApp ? (
@@ -262,69 +329,206 @@ function Workspace() {
             <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">This plugin is off or gone.</div>
           ))}
       </main>
-    </div>
-  );
-}
-
-function MainHeader({
-  title,
-  panes,
-  zoomed,
-  onChangePanes,
-}: {
-  title?: string;
-  /** one thread enlarged from panes: Esc / ⌘↵ goes back */
-  zoomed: boolean;
-  /** current pane count, or null when a panel (Apps/Plugins) is open */
-  panes: Panes | null;
-  onChangePanes: (n: Panes) => void;
-}) {
-  return (
-    <div data-tauri-drag-region className="relative flex h-[52px] shrink-0 items-center justify-center px-20">
-      {title && <span className="truncate text-[13px] font-medium text-foreground/80">{title}</span>}
-      {zoomed && <span className="ml-2 shrink-0 text-[11px] text-muted-foreground-subtle">Esc to go back</span>}
-      <div className="absolute top-1/2 right-4 -translate-y-1/2" style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}>
-        <TooltipProvider>
-          <div className="flex items-center gap-0.5 rounded-full border border-border bg-secondary/70 p-0.5">
-            {([1, 2, 3, 4] as const).map((n) => (
-              <Tooltip key={n}>
-                <TooltipTrigger asChild>
-                  <button
-                    onClick={() => onChangePanes(n)}
-                    aria-label={`${n} ${n === 1 ? 'pane' : 'panes'}`}
-                    aria-pressed={panes === n}
-                    className={cn(
-                      'flex size-6 items-center justify-center rounded-full transition-colors',
-                      panes === n
-                        ? 'bg-background text-foreground shadow-[0_1px_4px_rgba(0,0,0,0.08)]'
-                        : 'text-muted-foreground hover:text-foreground',
-                    )}
-                  >
-                    <PanesIcon n={n} />
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  {n === 1 ? 'One thread' : `${n} threads side by side`} · ⌘{n}
-                </TooltipContent>
-              </Tooltip>
-            ))}
-          </div>
-        </TooltipProvider>
-      </div>
+      <DragLayer />
     </div>
   );
 }
 
 /**
- * Window-level shortcuts: ⌘T new thread, ⌘1–⌘4 pane count, ⌘↵ enlarge/restore the active
- * thread, Esc restore, ⌘[ / ⌘] previous/next thread. Handlers are read from a
- * ref so the listener is registered once.
+ * Shows or hides the left column (⌘B). Fixed beside the macOS traffic lights,
+ * so it stays put: over the sidebar's drag strip when open, over the main
+ * header when closed. Its own element, so a click never starts a window drag.
+ */
+function SidebarToggle({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+  const label = open ? 'Hide sidebar' : 'Show sidebar';
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            onClick={onToggle}
+            aria-label={label}
+            aria-expanded={open}
+            className="fixed top-[3px] left-[76px] z-40 flex size-[22px] items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-foreground/[0.07] hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+          >
+            <PanelLeft className="size-[15px]" />
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">
+          {label}
+          <span className="ml-1.5 opacity-60">⌘B</span>
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
+/** a pane enlarged from a split (`maximized`): Esc / ⌘↵ goes back */
+function MainHeader({
+  title,
+  maximized,
+  navOpen,
+  group,
+}: {
+  title?: string;
+  maximized: boolean;
+  /** closed: the traffic lights and sidebar toggle sit over this header's left end */
+  navOpen: boolean;
+  group?: ReactNode;
+}) {
+  return (
+    <div
+      data-tauri-drag-region
+      className={cn(
+        'relative flex h-[52px] shrink-0 items-center justify-center transition-[padding] duration-200',
+        navOpen ? 'px-20' : 'px-28',
+      )}
+    >
+      {group || (
+        <>
+          {title && <span className="truncate text-[13px] font-medium text-foreground/80">{title}</span>}
+          {maximized && <span className="ml-2 shrink-0 text-[11px] text-muted-foreground-subtle">Esc to go back</span>}
+        </>
+      )}
+      <AccountMenu />
+    </div>
+  );
+}
+
+/** One-line name field: Enter (or leaving it) saves, Esc cancels. */
+function NameInput({
+  initial,
+  onSubmit,
+  onCancel,
+  className,
+}: {
+  initial: string;
+  onSubmit: (name: string) => void;
+  onCancel: () => void;
+  className?: string;
+}) {
+  const [value, setValue] = useState(initial);
+  const done = useRef(false);
+  const finish = (save: boolean) => {
+    if (done.current) return;
+    done.current = true;
+    if (save && value.trim()) onSubmit(value.trim());
+    else onCancel();
+  };
+  return (
+    <input
+      autoFocus
+      value={value}
+      onChange={(e) => setValue(e.target.value)}
+      onFocus={(e) => e.target.select()}
+      onClick={(e) => e.stopPropagation()}
+      onBlur={() => finish(true)}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') finish(true);
+        else if (e.key === 'Escape') {
+          e.preventDefault();
+          finish(false);
+        }
+      }}
+      className={cn(
+        'min-w-0 rounded-md border border-border bg-background px-2 py-0.5 text-[13px] outline-none focus:border-muted-foreground/40',
+        className,
+      )}
+    />
+  );
+}
+
+/**
+ * The split's group: "Save group" (⌘S) once two panes are open, or — while a
+ * group is open — its name (click to rename) and "Close group".
+ */
+function GroupBar({ canSave }: { canSave: boolean }) {
+  const active = useGroups((s) => s.groups.find((g) => g.id === s.activeId));
+  const naming = useGroups((s) => s.naming);
+  const tree = usePanes((s) => s.tree);
+  const maximized = usePanes((s) => s.maximized);
+  const [renaming, setRenaming] = useState(false);
+  const g = useGroups.getState();
+
+  if (active)
+    return (
+      <>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <LayoutGrid className="size-3.5 shrink-0 text-muted-foreground" />
+          {renaming ? (
+            <NameInput
+              initial={active.name}
+              onSubmit={(name) => {
+                g.rename(active.id, name);
+                setRenaming(false);
+              }}
+              onCancel={() => setRenaming(false)}
+              className="w-64"
+            />
+          ) : (
+            <button
+              onClick={() => setRenaming(true)}
+              title="Rename group"
+              className="truncate rounded-md px-1.5 py-0.5 text-[13px] font-medium text-foreground/80 hover:bg-accent"
+            >
+              {active.name}
+            </button>
+          )}
+          {maximized && <span className="shrink-0 text-[11px] text-muted-foreground-subtle">Esc to go back</span>}
+        </div>
+        <button
+          onClick={() => g.close()}
+          className="absolute right-12 rounded-md px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        >
+          Close group
+        </button>
+      </>
+    );
+
+  if (!canSave || maximized) return null;
+  if (naming)
+    return (
+      <div className="flex min-w-0 items-center gap-1.5">
+        <LayoutGrid className="size-3.5 shrink-0 text-muted-foreground" />
+        <NameInput
+          initial={defaultGroupName(tree)}
+          onSubmit={(name) => g.save(name)}
+          onCancel={() => g.setNaming(false)}
+          className="w-72"
+        />
+        <span className="shrink-0 text-[11px] text-muted-foreground-subtle">↵ to save</span>
+      </div>
+    );
+  return (
+    <button
+      onClick={() => g.setNaming(true)}
+      className="absolute right-12 flex items-center gap-1.5 rounded-md px-2 py-1 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+    >
+      <LayoutGrid className="size-3.5" />
+      Save group
+      <kbd className="text-[11px] text-muted-foreground-subtle">⌘S</kbd>
+    </button>
+  );
+}
+
+/**
+ * Window-level shortcuts: ⌘T new thread in the focused pane, ⌘\ split it
+ * with a new thread, ⌘W close the focused pane, ⌘1–⌘4 focus pane N, ⌘[ / ⌘]
+ * previous/next pane, ⌘↵ maximize/restore the focused pane, ⌘S save the
+ * split as a group, ⌘B show/hide the sidebar, Esc restore,
+ * ⌃1–⌃9 workspaces. Handlers are read from a ref so the listener is
+ * registered once.
  */
 function useHotkeys(h: {
   newThread: () => void;
-  panes: (n: Panes) => void;
-  toggleZoom: () => void;
+  splitRight: () => void;
+  closePane: () => void;
+  focusPane: (n: number) => void;
+  toggleMaximize: () => void;
   escape: () => void;
+  saveGroup: () => void;
+  toggleSidebar: () => void;
   step: (dir: 1 | -1) => void;
 }) {
   const ref = useRef(h);
@@ -342,12 +546,26 @@ function useHotkeys(h: {
       } else if (mod && !e.shiftKey && e.key.toLowerCase() === 't') {
         e.preventDefault();
         ref.current.newThread();
+      } else if (mod && !e.shiftKey && (e.key === '\\' || e.code === 'Backslash')) {
+        e.preventDefault();
+        ref.current.splitRight();
+      } else if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === 'w') {
+        // Always handled, so ⌘W never closes the window from a single pane.
+        e.preventDefault();
+        ref.current.closePane();
       } else if (e.metaKey && ['1', '2', '3', '4'].includes(e.key)) {
         e.preventDefault();
-        ref.current.panes(Number(e.key) as Panes);
+        ref.current.focusPane(Number(e.key));
+      } else if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        ref.current.saveGroup();
+      } else if (e.metaKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'b') {
+        // ⌘ only: ⌃B moves the caret back in macOS text fields.
+        e.preventDefault();
+        ref.current.toggleSidebar();
       } else if (mod && e.key === 'Enter') {
         e.preventDefault();
-        ref.current.toggleZoom();
+        ref.current.toggleMaximize();
       } else if (mod && (e.key === ']' || e.key === '[')) {
         e.preventDefault();
         ref.current.step(e.key === ']' ? 1 : -1);
@@ -359,25 +577,6 @@ function useHotkeys(h: {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
-}
-
-/** A tiny picture of the layout: 1 box, 2 or 3 columns, or a 2×2 grid. */
-function PanesIcon({ n }: { n: Panes }) {
-  const rects =
-    n === 1
-      ? [[1, 1, 12, 12]]
-      : n === 2
-        ? [[1, 1, 5.5, 12], [7.5, 1, 5.5, 12]]
-        : n === 3
-          ? [[1, 1, 3.3, 12], [5.35, 1, 3.3, 12], [9.7, 1, 3.3, 12]]
-          : [[1, 1, 5.5, 5.5], [7.5, 1, 5.5, 5.5], [1, 7.5, 5.5, 5.5], [7.5, 7.5, 5.5, 5.5]];
-  return (
-    <svg viewBox="0 0 14 14" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="1.2">
-      {rects.map(([x, y, w, h], i) => (
-        <rect key={i} x={x} y={y} width={w} height={h} rx="1.2" />
-      ))}
-    </svg>
-  );
 }
 
 /* ── Workspace rail: switch orgs like Slack ─────────── */
@@ -448,22 +647,23 @@ function WorkspaceRail() {
 
 function Sidebar({
   view,
-  slotOf,
+  openIds,
   onChangeView,
   onOpenThread,
   onNewThread,
+  onOpenGroup,
 }: {
   view: ViewMode;
-  /** thread id → pane number, for threads on screen in a multi-pane layout */
-  slotOf: Record<string, number>;
+  /** threads open in a pane */
+  openIds: Set<string>;
   onChangeView: (v: ViewMode) => void;
   onOpenThread: (id: string) => void;
   onNewThread: () => void;
+  onOpenGroup: (id: string) => void;
 }) {
   const sessions = useAppStore((s) => s.sessions);
   const selectedId = useAppStore((s) => s.selectedId);
   const running = useAppStore((s) => s.running);
-  const deleteSession = useAppStore((s) => s.deleteSession);
   const inThreads = view === 'threads';
   const cloudInbox = useAppStore((s) => s.cloudInbox);
   const approvals = useAppStore((s) => s.approvals);
@@ -472,8 +672,30 @@ function Sidebar({
     [sessions, running, approvals, cloudInbox],
   );
 
+  // The middle's sections, in the user's order: sections with nothing to show
+  // keep their saved place for when they come back.
+  const hasPinned = usePinnedApps((s) => s.pinned.length > 0);
+  const hasGroups = useGroups((s) => s.groups.length > 0);
+  const plugins = usePlugins((s) => s.plugins);
+  const pluginTarget = usePlugins((s) => s.target?.id);
+  const hidden = useSidebarLayout((s) => s.hidden);
+  const savedOrder = useSidebarLayout((s) => s.order);
+  const pluginById = useMemo(
+    () => new Map(plugins.filter((p) => p.enabled).map((p) => [pluginSection(p.id), p])),
+    [plugins],
+  );
+  const order = useMemo(() => {
+    const available = [
+      ...(hasPinned ? ['pinned'] : []),
+      ...[...pluginById.keys()].filter((id) => !hidden.includes(id)),
+      ...(hasGroups ? ['groups'] : []),
+      'threads',
+    ];
+    return fillOrder(savedOrder.filter((id) => available.includes(id)), available);
+  }, [hasPinned, hasGroups, pluginById, hidden, savedOrder]);
+
   return (
-    <aside className="flex w-[260px] shrink-0 flex-col bg-sidebar text-sidebar-foreground">
+    <aside data-sidebar style={{ width: SIDEBAR_WIDTH }} className="flex shrink-0 flex-col bg-sidebar text-sidebar-foreground">
       {/* Drag handle — macOS traffic lights float over this strip (see hiddenTitle/titleBarStyle in tauri.conf.json). */}
       <div data-tauri-drag-region className="h-[52px] shrink-0 pl-20" />
 
@@ -496,31 +718,82 @@ function Sidebar({
         <SidebarNavItem icon={AppWindow} label="Apps" active={view === 'apps'} onClick={() => onChangeView('apps')} />
         <SidebarNavItem icon={Puzzle} label="Plugins" active={view === 'plugins'} onClick={() => onChangeView('plugins')} />
         <SidebarNavItem icon={KeyRound} label="Secrets" active={view === 'secrets'} onClick={() => onChangeView('secrets')} />
-        <PinnedAppsSection active={view === 'app-page'} />
       </div>
 
-      <div className="mt-4 px-4 pb-1.5 text-[11px] font-medium text-muted-foreground-subtle">Threads</div>
+      {/* One scroll area for every section, so an open plugin panel never hides
+          Threads. Radix wraps content in a display:table div that grows with
+          the longest title; make it a block so titles truncate and row badges
+          stay visible. */}
+      <ScrollArea className="min-h-0 flex-1" viewportClassName="[&>div]:!block">
+        <SectionOrder.Provider value={order}>
+          <div className="flex flex-col px-2.5 pb-2">
+            {order.map((id, i) => (
+              <SidebarSection key={id} id={id} gap={i === 0 || !(isPluginSection(id) && isPluginSection(order[i - 1]))}>
+                {id === 'pinned' ? (
+                  <PinnedAppsSection active={view === 'app-page'} />
+                ) : id === 'groups' ? (
+                  <GroupsSection active={inThreads} onOpen={onOpenGroup} />
+                ) : id === 'threads' ? (
+                  <ThreadsSection
+                    inThreads={inThreads}
+                    openIds={openIds}
+                    selectedId={selectedId}
+                    onOpenThread={onOpenThread}
+                  />
+                ) : (
+                  <PluginEntry
+                    plugin={pluginById.get(id)!}
+                    active={view === 'plugin-page' && pluginTarget === pluginById.get(id)!.id}
+                  />
+                )}
+              </SidebarSection>
+            ))}
+          </div>
+        </SectionOrder.Provider>
+      </ScrollArea>
+      <SidebarDragLayer />
+    </aside>
+  );
+}
 
-      <ScrollArea className="min-h-0 flex-1 px-2.5">
-        <div className="flex flex-col gap-px pb-2">
+/** The threads, newest first; drag one onto the main area to open it in a split. */
+function ThreadsSection({
+  inThreads,
+  openIds,
+  selectedId,
+  onOpenThread,
+}: {
+  inThreads: boolean;
+  openIds: Set<string>;
+  selectedId: string | null;
+  onOpenThread: (id: string) => void;
+}) {
+  const sessions = useAppStore((s) => s.sessions);
+  const running = useAppStore((s) => s.running);
+  const approvals = useAppStore((s) => s.approvals);
+  const deleteSession = useAppStore((s) => s.deleteSession);
+  const collapsed = useSidebarLayout((s) => isCollapsed(s.collapsed, 'threads'));
+  return (
+    <>
+      <SectionHeader id="threads" label="Threads" />
+      {!collapsed && (
+        <div className="flex flex-col gap-px">
           {sessions.map((s) => (
             <div
               key={s.id}
               onClick={() => onOpenThread(s.id)}
+              // Drag onto the main area to open it in a split.
+              onPointerDown={(e) => startThreadDrag(e, s.id)}
               className={cn(
-                'group flex cursor-default items-center gap-2 rounded-lg px-2.5 py-[7px] transition-colors',
-                inThreads && selectedId === s.id ? 'bg-sidebar-accent' : 'hover:bg-sidebar-hover',
+                'group flex cursor-default items-center gap-2 rounded-lg px-2.5 py-[7px] transition-colors select-none',
+                inThreads && selectedId === s.id
+                  ? 'bg-sidebar-accent'
+                  : inThreads && openIds.has(s.id)
+                    ? 'bg-sidebar-accent/50 hover:bg-sidebar-hover'
+                    : 'hover:bg-sidebar-hover',
               )}
             >
               <RunnerBadge runner={s.runner} className="size-3.5 shrink-0 text-muted-foreground" />
-              {slotOf[s.id] && (
-                <span
-                  title={`In pane ${slotOf[s.id]}`}
-                  className="flex size-4 shrink-0 items-center justify-center rounded bg-foreground/[0.07] text-[10px] font-medium text-foreground/70"
-                >
-                  {slotOf[s.id]}
-                </span>
-              )}
               <span className="min-w-0 flex-1 truncate text-[13px] leading-tight">{s.title}</span>
               {approvals[s.id]?.length ? (
                 <span
@@ -549,55 +822,80 @@ function Sidebar({
             </div>
           ))}
         </div>
-      </ScrollArea>
-
-      <PluginSidebarSections />
-
-      <SidebarFooter />
-    </aside>
+      )}
+    </>
   );
 }
 
-/** Quiet status row: connection + environment, theme toggle, sign out. No heavy top bar. */
-/** Enabled plugins that ship a sidebar page get a collapsible section here. */
-function PluginSidebarSections() {
-  const all = usePlugins((s) => s.plugins);
-  const plugins = useMemo(() => all.filter((p) => p.enabled && p.sidebar), [all]);
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
-    try {
-      return JSON.parse(localStorage.getItem('aa.pluginSections') ?? '{}');
-    } catch {
-      return {};
-    }
-  });
-  const toggle = (id: string) => {
-    const next = { ...collapsed, [id]: !collapsed[id] };
-    setCollapsed(next);
-    try {
-      localStorage.setItem('aa.pluginSections', JSON.stringify(next));
-    } catch {
-      /* best-effort */
-    }
-  };
-  if (!plugins.length) return null;
-
+/** Saved splits: click to restore one exactly; rename or delete on hover. */
+function GroupsSection({ active, onOpen }: { active: boolean; onOpen: (id: string) => void }) {
+  const groups = useGroups((s) => s.groups);
+  const activeId = useGroups((s) => s.activeId);
+  const [editing, setEditing] = useState<string | null>(null);
+  const collapsed = useSidebarLayout((s) => isCollapsed(s.collapsed, 'groups'));
+  if (!groups.length) return null;
   return (
-    <div className="flex max-h-[45%] shrink-0 flex-col border-t border-border">
-      {plugins.map((p) => (
-        <div key={p.id} className={cn('flex min-h-0 flex-col', !collapsed[p.id] && 'flex-1')}>
-          <button
-            onClick={() => toggle(p.id)}
-            className="flex shrink-0 items-center gap-1 px-4 pt-2.5 pb-1.5 text-[11px] font-medium text-muted-foreground-subtle hover:text-foreground"
-          >
-            {collapsed[p.id] ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3" />}
-            {p.title}
-          </button>
-          {!collapsed[p.id] && (
-            <PluginFrame plugin={p} page={p.sidebar!} className="min-h-[180px] w-full flex-1 border-0 bg-sidebar" />
-          )}
+    <>
+      <SectionHeader id="groups" label="Groups" />
+      {!collapsed && (
+        <div className="flex flex-col gap-px">
+          {groups.map((g) => {
+            const n = leaves(g.tree).length;
+            return (
+              <div
+                key={g.id}
+                onClick={() => editing !== g.id && onOpen(g.id)}
+                title={`${g.name} — ${n} pane${n === 1 ? '' : 's'}`}
+                className={cn(
+                  'group flex cursor-default items-center gap-2 rounded-lg px-2.5 py-[7px] transition-colors select-none',
+                  active && activeId === g.id ? 'bg-sidebar-accent' : 'hover:bg-sidebar-hover',
+                )}
+              >
+                <LayoutGrid className="size-3.5 shrink-0 text-muted-foreground" />
+                {editing === g.id ? (
+                  <NameInput
+                    initial={g.name}
+                    onSubmit={(name) => {
+                      useGroups.getState().rename(g.id, name);
+                      setEditing(null);
+                    }}
+                    onCancel={() => setEditing(null)}
+                    className="flex-1 py-0 text-[12.5px]"
+                  />
+                ) : (
+                  <span className="min-w-0 flex-1 truncate text-[13px] leading-tight">{g.name}</span>
+                )}
+                <span className="shrink-0 text-[11px] text-muted-foreground-subtle tabular-nums group-hover:hidden">{n}</span>
+                {editing !== g.id && (
+                  <>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setEditing(g.id);
+                      }}
+                      className="hidden shrink-0 text-muted-foreground hover:text-foreground group-hover:block"
+                      aria-label={`Rename ${g.name}`}
+                    >
+                      <Pencil className="size-3" />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        useGroups.getState().remove(g.id);
+                      }}
+                      className="hidden shrink-0 text-muted-foreground hover:text-foreground group-hover:block"
+                      aria-label={`Delete ${g.name}`}
+                    >
+                      <X className="size-3.5" />
+                    </button>
+                  </>
+                )}
+              </div>
+            );
+          })}
         </div>
-      ))}
-    </div>
+      )}
+    </>
   );
 }
 
@@ -607,38 +905,42 @@ function PinnedAppsSection({ active }: { active: boolean }) {
   const opened = usePinnedApps((s) => s.opened);
   const open = usePinnedApps((s) => s.open);
   const unpin = usePinnedApps((s) => s.unpin);
+  const collapsed = useSidebarLayout((s) => isCollapsed(s.collapsed, 'pinned'));
   if (!pinned.length) return null;
   return (
-    <div className="mt-3">
-      <div className="px-2.5 pb-1 text-[11px] font-medium text-muted-foreground-subtle">Pinned</div>
-      {pinned.map((a) => (
-        <div
-          key={a.key}
-          onClick={() => open(a.key)}
-          title={`${a.title} — ${a.kind === 'local' ? 'on this device' : 'AgentArea'} · ${a.subtitle}`}
-          className={cn(
-            'group flex cursor-default items-center gap-2 rounded-lg px-2.5 py-[6px] text-[13px] transition-colors',
-            active && opened?.key === a.key ? 'bg-sidebar-accent' : 'hover:bg-sidebar-hover',
-          )}
-        >
-          <EntityIcon name={a.title} icons={a.icons} seed={a.seed} className="size-4 rounded-[5px] text-[7px]" />
-          <span className="min-w-0 flex-1 truncate">{a.title}</span>
-          <span className="shrink-0 text-[10.5px] text-muted-foreground-subtle group-hover:hidden">
-            {a.kind === 'local' ? 'Local' : 'Cloud'}
-          </span>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              unpin(a.key);
-            }}
-            className="hidden shrink-0 text-muted-foreground hover:text-foreground group-hover:block"
-            aria-label={`Unpin ${a.title}`}
+    <>
+      <SectionHeader id="pinned" label="Pinned" />
+      {!collapsed &&
+        pinned.map((a) => (
+          <div
+            key={a.key}
+            onClick={() => open(a.key)}
+            // Drag onto the main area to open it in a split.
+            onPointerDown={(e) => startPaneDrag(e, { kind: 'app', app: a })}
+            title={`${a.title} — ${a.kind === 'local' ? 'on this device' : 'AgentArea'} · ${a.subtitle}`}
+            className={cn(
+              'group flex cursor-default items-center gap-2 rounded-lg px-2.5 py-[6px] text-[13px] transition-colors select-none',
+              active && opened?.key === a.key ? 'bg-sidebar-accent' : 'hover:bg-sidebar-hover',
+            )}
           >
-            <X className="size-3.5" />
-          </button>
-        </div>
-      ))}
-    </div>
+            <EntityIcon name={a.title} icons={a.icons} seed={a.seed} className="size-4 rounded-[5px] text-[7px]" />
+            <span className="min-w-0 flex-1 truncate">{a.title}</span>
+            <span className="shrink-0 text-[10.5px] text-muted-foreground-subtle group-hover:hidden">
+              {a.kind === 'local' ? 'Local' : 'Cloud'}
+            </span>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                unpin(a.key);
+              }}
+              className="hidden shrink-0 text-muted-foreground hover:text-foreground group-hover:block"
+              aria-label={`Unpin ${a.title}`}
+            >
+              <X className="size-3.5" />
+            </button>
+          </div>
+        ))}
+    </>
   );
 }
 
@@ -673,119 +975,85 @@ function SidebarNavItem({
   );
 }
 
-function SidebarFooter() {
+const CONNECTION = {
+  connected: { dot: 'bg-status-success', label: 'Connected' },
+  connecting: { dot: 'bg-chart-2', label: 'Connecting…' },
+  offline: { dot: 'bg-destructive', label: 'Offline' },
+} as const;
+
+/** "ada.lovelace@x.io" → "AL", "you@x.io" → "Y" */
+function emailInitials(email: string | undefined): string {
+  const parts = (email ?? '').split('@')[0].split(/[._+-]+/).filter(Boolean);
+  return ((parts[0]?.[0] ?? '?') + (parts[1]?.[0] ?? '')).toUpperCase();
+}
+
+/**
+ * The account, top right: theme, environment and connection, sign out. The
+ * connection shows on the avatar only when something is wrong.
+ */
+function AccountMenu() {
   const theme = useAppStore((s) => s.settings.theme);
   const toggleTheme = useAppStore((s) => s.toggleTheme);
   const logout = useAppStore((s) => s.logout);
   const email = useAppStore((s) => s.auth.user?.email);
-
-  return (
-    <div className="flex shrink-0 items-center justify-between gap-1 border-t border-sidebar-border px-2 py-1.5">
-      <ConnectionPill />
-      <div className="flex shrink-0 items-center gap-0.5">
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-6 text-muted-foreground hover:text-foreground"
-          onClick={toggleTheme}
-        >
-          {theme === 'dark' ? <Moon className="size-3.5" /> : <Sun className="size-3.5" />}
-        </Button>
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-6 text-muted-foreground hover:text-foreground"
-                onClick={logout}
-              >
-                <LogOut className="size-3.5" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="top">{email ? `Sign out ${email}` : 'Sign out'}</TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-      </div>
-    </div>
-  );
-}
-
-function ConnectionPill() {
   const status = useAppStore((s) => s.connection);
+  const connectionError = useAppStore((s) => s.connectionError);
+  const connect = useAppStore((s) => s.connect);
   const envLabel = useAppStore((s) => s.env.label);
-  const meta = {
-    connected: { dot: 'bg-status-success', label: 'Connected', ping: false },
-    connecting: { dot: 'bg-chart-2', label: 'Connecting…', ping: true },
-    offline: { dot: 'bg-destructive', label: 'Offline', ping: false },
-  }[status];
+  const conn = CONNECTION[status];
+  const problem = status !== 'connected';
   return (
-    <div className="flex min-w-0 items-center gap-1.5 px-1 text-[11px] text-muted-foreground">
-      <span className="relative flex size-1.5 shrink-0">
-        {meta.ping && (
-          <span className={cn('absolute inline-flex size-full animate-ping rounded-full opacity-60', meta.dot)} />
-        )}
-        <span className={cn('relative inline-flex size-1.5 rounded-full', meta.dot)} />
-      </span>
-      <span className="truncate">
-        {envLabel} · {meta.label}
-      </span>
-    </div>
-  );
-}
-
-/* ── Thread (Focus) ─────────────────────────────────────── */
-
-const NO_APPROVALS: never[] = [];
-
-function SessionBody({ session, overId }: { session: Session; overId: string | null }) {
-  const running = useAppStore((s) => !!s.running[session.id]);
-  const draft = useAppStore((s) => s.drafts[session.id] ?? '');
-  const approvals = useAppStore((s) => s.approvals[session.id] ?? NO_APPROVALS);
-  const bottom = useRef<HTMLDivElement>(null);
-  const fresh = session.messages.length === 0;
-
-  useEffect(() => {
-    bottom.current?.scrollIntoView({ block: 'end' });
-  }, [session.messages.length, running, draft.length, approvals.length]);
-
-  if (fresh)
-    return (
-      <div className="relative flex flex-1 flex-col items-center justify-center px-6 pb-24">
-        <h1 className="mb-7 text-[26px] font-semibold tracking-tight text-foreground">What should we work on?</h1>
-        <div className="w-full max-w-[600px]">
-          <Composer session={session} autoFocus />
-        </div>
-        {overId === session.id && <DropOverlay />}
-      </div>
-    );
-
-  return (
-    <div className="relative flex min-h-0 flex-1 flex-col">
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="mx-auto flex max-w-[720px] flex-col gap-5 px-6 py-6">
-          <ThreadFolder session={session}>
-            {groupMessages(session.messages).map((g) =>
-              Array.isArray(g) ? <ToolGroup key={g[0].id} tools={g} /> : <MessageRow key={g.id} message={g} />,
-            )}
-            {draft && <DraftRow text={draft} />}
-          </ThreadFolder>
-          {approvals.map((a) => (
-            <ApprovalCard key={a.id} approval={a} />
-          ))}
-          {running && !draft && approvals.length === 0 && (
-            <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
-              <span className="size-1.5 animate-pulse rounded-full bg-chart-2" />
-              Working…
-            </div>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          aria-label={problem ? `Account — ${conn.label}` : 'Account'}
+          title={problem ? `${envLabel} · ${conn.label}` : (email ?? 'Account')}
+          className="absolute right-3 flex size-7 items-center justify-center rounded-full bg-foreground/[0.07] text-[11px] font-semibold text-foreground/70 outline-none transition-colors hover:bg-foreground/[0.11] focus-visible:ring-2 focus-visible:ring-ring/50 hover:text-foreground data-[state=open]:bg-foreground/[0.13]"
+        >
+          {emailInitials(email)}
+          {problem && (
+            <span className={cn('absolute -right-px -bottom-px size-2.5 rounded-full ring-2 ring-background', conn.dot)} />
           )}
-          <div ref={bottom} />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" sideOffset={6} className="w-60">
+        <div className="flex flex-col gap-1 px-2 py-1.5">
+          {email && <span className="truncate text-[13px] font-medium text-foreground">{email}</span>}
+          <span className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted-foreground">
+            <span className={cn('size-1.5 shrink-0 rounded-full', conn.dot, status === 'connecting' && 'animate-pulse')} />
+            <span className="truncate">
+              {envLabel} · {conn.label}
+            </span>
+          </span>
+          {status === 'offline' && connectionError && (
+            <span className="text-[11px] break-words text-destructive">{connectionError}</span>
+          )}
+          {status === 'offline' && (
+            <button
+              className="self-start text-[11.5px] text-muted-foreground underline underline-offset-2 hover:text-foreground"
+              onClick={() => void connect()}
+            >
+              Reconnect
+            </button>
+          )}
         </div>
-      </ScrollArea>
-      <div className="mx-auto w-full max-w-[720px] px-6 pb-5">
-        <Composer session={session} />
-      </div>
-      {overId === session.id && <DropOverlay />}
-    </div>
+        <DropdownMenuSeparator />
+        {/* Stays open: the flip is the feedback. */}
+        <DropdownMenuItem
+          onSelect={(e) => {
+            e.preventDefault();
+            toggleTheme();
+          }}
+        >
+          {theme === 'dark' ? <Sun /> : <Moon />}
+          {theme === 'dark' ? 'Light mode' : 'Dark mode'}
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onSelect={logout}>
+          <LogOut />
+          Sign out
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

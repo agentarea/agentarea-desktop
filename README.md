@@ -60,9 +60,19 @@ pending approvals and replies you haven't read.
 A thread keeps its runner once the first message is sent (the next turn resumes
 that runner's own session). Threads live in `localStorage` for now.
 
-**Views.** Focus (one thread) or a grid of 2–4 panes (⌘1–⌘4 sets the count;
-⌘[ / ⌘] steps between threads, ⌘Enter zooms a pane, ⌘T opens a new thread,
-⌃1–⌃9 switches workspace).
+**Views.** One pane, or up to four split like Claude desktop: drag a thread,
+a pinned app, an app from the Apps panel or a plugin's sidebar entry onto the
+main area and drop it on a side of a pane (a plain click still opens it
+full-page). Panes hold threads, MCP apps and plugin pages side by side; drag a
+pane's header to move it, drag a divider to resize (double-click resets).
+⌘1–⌘4 focuses a pane, ⌘[ / ⌘] steps between panes, ⌘Enter zooms one, ⌘W
+closes it, ⌘\\ splits with a new thread, ⌘T opens a new thread, ⌃1–⌃9
+switches workspace. **Groups:** with two or more panes open, "Save group" (⌘S)
+names the split; it appears under Groups in the sidebar and a click restores
+it exactly (contents and sizes). While a group is open, layout changes save to
+it; "Close group" goes back to one pane. Groups are kept per workspace in
+`localStorage`, and a pane whose thread, app or plugin is gone shows a
+placeholder with Remove.
 Each local thread works in a folder: a picked one, or its own `~/AgentArea/<id>`;
 files dropped on a thread are copied there (or read in place when a folder is
 picked). Replies render as markdown; local file links become chips that open
@@ -145,6 +155,16 @@ which is which, and a local agent can see both.
   and can't leave it. Requests go through `apiRequest`, so the plugin never
   sees a token. `threads.attachCloud({path})` attaches an
   `agentarea://files/…` reference.
+- **Plugin backends.** A plugin can declare an MCP server in `plugin.json`
+  (`"server": {"local": {...}, "cloud": {"instance": "plugin:<id>"}}`). It runs
+  locally (a stdio child) or as the workspace's MCP instance `plugin:<id>`,
+  only after the user reviews and allows it. The approved version runs from
+  a read-only copy, and later folder changes wait for another review. It is
+  reachable at one local URL either way:
+  `/plugins/<id>/mcp` on the loopback server. Local agents get it as
+  `plugin_<id>`; the plugin's page uses `plugin.tools()` / `plugin.call()`.
+  Design: [docs/plugin-backends.md](docs/plugin-backends.md); example:
+  `examples/plugins/backend-demo/`.
 - **LLM Wiki.** The example plugin (`examples/plugins/llm-wiki/`) shows
   "Local · folder" and "Cloud · AgentArea · workspace / root" trees side by
   side, with one filter across both. The viewer shows a source badge; hashes
@@ -194,5 +214,6 @@ src-tauri/             # Rust core: OAuth loopback, runners (persistent CLI
                        # processes), local MCP runtime,
                        # vault (keychain) + secrets MCP server, data MCP
                        # server (data_mcp.rs: local + cloud data sources),
-                       # AgentArea MCP proxy (secrets_mcp.rs)
+                       # AgentArea MCP proxy (secrets_mcp.rs), plugin
+                       # backends + their gateway (plugin_backends.rs)
 ```

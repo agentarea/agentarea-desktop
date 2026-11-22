@@ -67,14 +67,20 @@ jobs:
             { echo "$v<<__EOF__"; printenv "$v"; echo "__EOF__"; } >> "$GITHUB_ENV"
           done
 
+      # The updater key signs every bundle; the app trusts only the matching
+      # pubkey in tauri.conf.json and reads latest.json from the newest release.
       - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
           releaseName: AgentArea Desktop v__VERSION__
+          includeUpdaterJson: true
           releaseBody: |
-            Download the installer for your platform below.
+            Download the installer for your platform below. Installed apps
+            offer this update on their next launch.
 
             - **macOS** (Apple Silicon and Intel): `.dmg`
             - **Windows**: `.msi` or `-setup.exe`

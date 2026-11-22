@@ -45,7 +45,8 @@ pub struct Source {
 pub struct CloudAccess {
     pub api_base: String,
     pub token: String,
-    /// `X-AgentArea-Workspace` (id or slug); None = the user's default
+    /// The workspace slug: every call goes to `/v1/workspaces/{slug}/...` (the
+    /// API selects the workspace by path only). None = unscoped `/v1/...`.
     pub workspace: Option<String>,
 }
 
@@ -68,24 +69,35 @@ fn token_for(cloud: &CloudAccess) -> String {
 /// The app's current token for `api_base`, else `fallback` (the one a turn got
 /// at start). Also used by the AgentArea MCP proxy (secrets_mcp.rs).
 pub fn live_token(api_base: &str, fallback: &str) -> String {
+    current_token(api_base).unwrap_or_else(|| fallback.to_string())
+}
+
+/// The app's current token for `api_base`; None when signed out (plugin
+/// backends in the cloud have no token of their own to fall back on).
+pub fn current_token(api_base: &str) -> Option<String> {
     LIVE_TOKEN
         .lock()
         .ok()
         .and_then(|live| live.as_ref().filter(|(base, _)| base == api_base).map(|(_, t)| t.clone()))
-        .unwrap_or_else(|| fallback.to_string())
 }
+
+/// Tests that set the (single, global) live token hold this.
+#[cfg(test)]
+pub(crate) static LIVE_TOKEN_TEST: Mutex<()> = Mutex::new(());
 
 /// One turn's data state; lives as long as the turn's bearer token.
 pub struct DataTurn {
     pub sources: Vec<Source>,
+    /// The thread (session) id: state writes are audited as `agent:<thread>`.
+    thread: String,
     cloud: Option<CloudAccess>,
     redactor: Redactor,
     listing: Mutex<Option<(Instant, Listing)>>,
 }
 
 impl DataTurn {
-    pub fn new(sources: Vec<Source>, cloud: Option<CloudAccess>, redactor: Redactor) -> DataTurn {
-        DataTurn { sources, cloud, redactor, listing: Mutex::new(None) }
+    pub fn new(thread: &str, sources: Vec<Source>, cloud: Option<CloudAccess>, redactor: Redactor) -> DataTurn {
+        DataTurn { sources, thread: thread.to_string(), cloud, redactor, listing: Mutex::new(None) }
     }
 }
 
@@ -143,7 +155,8 @@ pub fn agent_hint(sources: &[Source]) -> String {
     } else {
         hint.push_str(" Cloud files are unavailable: the user is not signed in to AgentArea.");
     }
-    hint.push_str(" list_sources (agentarea_data) repeats this list.");
+    hint.push_str(" list_sources (agentarea_data) repeats this list.\n");
+    hint.push_str(crate::state_db::AGENT_HINT);
     hint
 }
 
@@ -263,15 +276,27 @@ fn api_error(status: u16, what: &str) -> String {
     }
 }
 
-async fn get(cloud: &CloudAccess, path: &str) -> Result<reqwest::Response, String> {
-    let client = reqwest::Client::builder().timeout(HTTP_TIMEOUT).build().map_err(|e| e.to_string())?;
-    let mut req = client
-        .get(format!("{}{path}", cloud.api_base.trim_end_matches('/')))
-        .header("Authorization", format!("Bearer {}", token_for(cloud)));
-    if let Some(w) = &cloud.workspace {
-        req = req.header("X-AgentArea-Workspace", w);
+/// `path` (`/v1/...`) under the turn's workspace: `/v1/workspaces/{slug}/...`.
+fn scoped(cloud: &CloudAccess, path: &str) -> String {
+    match (&cloud.workspace, path.strip_prefix("/v1/")) {
+        (Some(slug), Some(rest)) => format!("/v1/workspaces/{}/{rest}", crate::vault::percent_encode(slug)),
+        _ => path.to_string(),
     }
-    req.send().await.map_err(|e| format!("AgentArea request failed: {}", e.without_url()))
+}
+
+async fn get(cloud: &CloudAccess, path: &str) -> Result<reqwest::Response, String> {
+    // Unscoped, the API would answer for the user's default workspace, not the
+    // one the UI shows.
+    if cloud.workspace.is_none() {
+        return Err("the AgentArea workspace isn't loaded yet; try again in a moment".into());
+    }
+    let client = reqwest::Client::builder().timeout(HTTP_TIMEOUT).build().map_err(|e| e.to_string())?;
+    client
+        .get(format!("{}{}", cloud.api_base.trim_end_matches('/'), scoped(cloud, path)))
+        .header("Authorization", format!("Bearer {}", token_for(cloud)))
+        .send()
+        .await
+        .map_err(|e| format!("AgentArea request failed: {}", e.without_url()))
 }
 
 async fn fetch_listing(cloud: &CloudAccess) -> Result<Listing, String> {
@@ -353,11 +378,19 @@ fn initialize_result(params: &Value) -> Value {
         "protocolVersion": version,
         "capabilities": { "tools": {} },
         "serverInfo": { "name": "agentarea-data", "version": env!("CARGO_PKG_VERSION") },
-        "instructions": "The thread's data sources. Local folders: read them with your own file tools by absolute path. Cloud (AgentArea workspace files, agentarea://files/<path>): cloud_list and cloud_read."
+        "instructions": "The thread's data sources. Local folders: read them with your own file tools by absolute path. Cloud (AgentArea workspace files, agentarea://files/<path>): cloud_list and cloud_read. Channels network state (~/AgentArea/state.db): state_query (read-only SQL) and the typed tools channel_update, persona_update, inventory_add/update/bind/unbind, post_upsert, metrics_add, inventory_gaps; the user's review verdicts on generated posts come from review_feedback and are answered with post_revise / post_review_resolve; every write is audited."
     })
 }
 
 fn tool_defs() -> Value {
+    let mut tools = file_tool_defs();
+    if let (Some(list), Value::Array(state)) = (tools.as_array_mut(), crate::state_db::mcp_tools()) {
+        list.extend(state);
+    }
+    tools
+}
+
+fn file_tool_defs() -> Value {
     json!([
         {
             "name": "list_sources",
@@ -393,7 +426,10 @@ fn call_tool(turn: &DataTurn, params: &Value) -> Result<Value, (i64, String)> {
         "list_sources" => Ok(serde_json::to_string_pretty(&turn.sources).unwrap_or_default()),
         "cloud_list" => cloud_list(turn, &args),
         "cloud_read" => cloud_read(turn, &args),
-        other => return Err((-32602, format!("unknown tool: {other}"))),
+        other => match crate::state_db::mcp_call(other, &args, &format!("agent:{}", turn.thread)) {
+            Some(out) => out,
+            None => return Err((-32602, format!("unknown tool: {other}"))),
+        },
     };
     let (text, is_error) = match out {
         Ok(t) => (turn.redactor.redact(&t), false),
@@ -487,6 +523,17 @@ mod tests {
     }
 
     #[test]
+    fn scopes_paths_by_workspace_slug() {
+        let c = |w: Option<&str>| CloudAccess { api_base: "x".into(), token: "t".into(), workspace: w.map(String::from) };
+        assert_eq!(scoped(&c(Some("acme")), "/v1/files"), "/v1/workspaces/acme/files");
+        assert_eq!(scoped(&c(Some("acme")), "/v1/files/download/a%20b.md"), "/v1/workspaces/acme/files/download/a%20b.md");
+        assert_eq!(scoped(&c(None), "/v1/files"), "/v1/files");
+        // Unscoped would read the user's default workspace: refuse instead.
+        let err = tauri::async_runtime::block_on(get(&c(None), "/v1/files")).err().unwrap();
+        assert!(err.contains("isn't loaded yet"), "{err}");
+    }
+
+    #[test]
     fn tells_text_from_binary() {
         assert!(is_text(Some("text/markdown; charset=utf-8"), "x"));
         assert!(is_text(Some("application/json"), "x"));
@@ -523,7 +570,7 @@ mod tests {
 
     fn turn(cloud: Option<CloudAccess>) -> DataTurn {
         let roots = [local("LLM Wiki", "/w/wiki")];
-        DataTurn::new(sources(&roots, Path::new("/t"), cloud.as_ref().map(|_| ("Acme", &[][..]))), cloud, Redactor::new([("TOKEN", "sk-secret-value")]))
+        DataTurn::new("t", sources(&roots, Path::new("/t"), cloud.as_ref().map(|_| ("Acme", &[][..]))), cloud, Redactor::new([("TOKEN", "sk-secret-value")]))
     }
 
     fn call(t: &DataTurn, name: &str, args: Value) -> (String, bool) {
@@ -539,7 +586,10 @@ mod tests {
         assert_eq!(init["result"]["protocolVersion"], "2025-06-18");
         let tools = handle_message(&t, &json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})).unwrap();
         let names: Vec<_> = tools["result"]["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap()).collect();
-        assert_eq!(names, ["list_sources", "cloud_list", "cloud_read"]);
+        assert_eq!(names[..3], ["list_sources", "cloud_list", "cloud_read"]);
+        for state_tool in ["state_query", "channel_update", "persona_update", "inventory_add", "inventory_update", "inventory_bind", "inventory_unbind", "post_upsert", "metrics_add", "inventory_gaps"] {
+            assert!(names.contains(&state_tool), "{state_tool}");
+        }
         assert!(handle_message(&t, &json!({"jsonrpc":"2.0","method":"notifications/initialized"})).is_none());
         let unknown = handle_message(&t, &json!({"jsonrpc":"2.0","id":3,"method":"resources/list"})).unwrap();
         assert_eq!(unknown["error"]["code"], -32601);
@@ -581,10 +631,12 @@ mod tests {
                         auth = h[14..].trim().to_string();
                     }
                     if lower.starts_with("x-agentarea-workspace:") {
-                        ws = h[22..].trim().to_string();
+                        ws = format!("header:{}", h[22..].trim());
                     }
                 }
-                let _ = tx.send(format!("{path} {auth} {ws}"));
+                let _ = tx.send(format!("{path} {auth}{ws}"));
+                // The API selects the workspace by path only.
+                let path = path.strip_prefix("/v1/workspaces/acme").map(|p| format!("/v1{p}")).unwrap_or(path);
                 let (status, ct, body): (u16, &str, Vec<u8>) = if auth != "Bearer at-123" {
                     (401, "application/json", b"{\"detail\":\"nope\"}".to_vec())
                 } else if path == "/v1/files" {
@@ -615,18 +667,18 @@ mod tests {
     #[test]
     fn cloud_tools_against_a_fake_api() {
         let (base, seen) = fake_api(5);
-        let t = turn(Some(CloudAccess { api_base: base, token: "at-123".into(), workspace: Some("ws-1".into()) }));
+        let t = turn(Some(CloudAccess { api_base: base, token: "at-123".into(), workspace: Some("acme".into()) }));
         let (text, err) = call(&t, "cloud_list", json!({"prefix":"wiki/"}));
         assert!(!err, "{text}");
         assert!(text.contains("\"wiki/index.md\"") && text.contains("logo.png"), "{text}");
-        assert_eq!(seen.recv().unwrap(), "/v1/files Bearer at-123 ws-1");
+        assert_eq!(seen.recv().unwrap(), "/v1/workspaces/acme/files Bearer at-123", "path-scoped, no workspace header");
         let (_, err) = call(&t, "cloud_list", json!({}));
         assert!(!err, "second list is served from the cache");
 
         let (text, err) = call(&t, "cloud_read", json!({"path":"agentarea://files/wiki/index.md"}));
         assert!(!err, "{text}");
         assert_eq!(text, "# Cloud index\nkey: [secret:TOKEN]\n", "content is redacted");
-        assert_eq!(seen.recv().unwrap(), "/v1/files/download/wiki/index.md Bearer at-123 ws-1");
+        assert_eq!(seen.recv().unwrap(), "/v1/workspaces/acme/files/download/wiki/index.md Bearer at-123");
 
         let (text, err) = call(&t, "cloud_read", json!({"path":"wiki/logo.png"}));
         assert!(err && text.contains("not a text file"), "{text}");
@@ -659,8 +711,8 @@ mod tests {
         let hints = [("LLM Wiki".to_string(), "wiki/".to_string())];
         let srcs = sources(&roots, &cwd, Some(("Acme", &hints)));
         let hint = agent_hint(&srcs);
-        let cloud = CloudAccess { api_base: base, token: "at-123".into(), workspace: Some("ws-1".into()) };
-        let data = server.issue_data_token(DataTurn::new(srcs, Some(cloud), Redactor::new([("TOKEN", "sk-secret-value")])));
+        let cloud = CloudAccess { api_base: base, token: "at-123".into(), workspace: Some("acme".into()) };
+        let data = server.issue_data_token(DataTurn::new("t", srcs, Some(cloud), Redactor::new([("TOKEN", "sk-secret-value")])));
 
         let mut cmd = std::process::Command::new(crate::cli_bin(runner));
         if runner == "claude" {
@@ -721,7 +773,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&wiki);
         assert!(stdout.contains("list_sources"), "listed sources");
         assert!(stdout.contains("cloud_read"), "called cloud_read");
-        assert!(requests.iter().any(|r| r.starts_with("/v1/files/download/wiki/index.md Bearer at-123 ws-1")), "API hit with the token");
+        assert!(requests.iter().any(|r| r.starts_with("/v1/workspaces/acme/files/download/wiki/index.md Bearer at-123")), "API hit with the token");
         assert!(stdout.contains("Cloud index") && stdout.contains("[secret:TOKEN]"), "cloud content came back, redacted");
         assert!(!stdout.contains("sk-secret-value"), "never unredacted");
         assert!(stdout.matches(&marker).count() >= 2, "local file was read (marker in tool result and answer)");

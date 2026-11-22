@@ -35,6 +35,7 @@ import type { CatalogItem, Session } from '@/data';
 import { modelsFor } from '@/lib/models';
 import { usePlugins } from '@/lib/plugins';
 import { EntityIcon } from './EntityIcon';
+import { AgentToolsChip } from './ContextPanel';
 
 /* ── Composer: prompt + attachments + tools + where it runs ─ */
 
@@ -75,7 +76,7 @@ export function Composer({ session, autoFocus }: { session: Session; autoFocus?:
         />
         <div className="flex items-center gap-1 px-0.5 pt-1">
           {session.runner === 'cloud' ? (
-            <span className="px-1.5 text-[12px] text-muted-foreground">Uses the agent's own tools</span>
+            <AgentToolsChip session={session} />
           ) : (
             <>
               <MemberPicker session={session} kind="mcp" label="MCP" icon={Plug} items={mcps} selected={session.mcpIds} />
@@ -109,8 +110,9 @@ export function Composer({ session, autoFocus }: { session: Session; autoFocus?:
       <div className="mt-2.5 flex flex-wrap items-center gap-1.5 px-1">
         <RunnerPicker session={session} />
         <ModelChip session={session} />
-        <FolderChip session={session} />
-        <DataChip session={session} />
+        {/* Folder, data, attachments and touched files live in the Context panel; the folder
+            stays here until the first message, while it can still be chosen. */}
+        {session.messages.length === 0 && <FolderChip session={session} />}
       </div>
     </div>
   );

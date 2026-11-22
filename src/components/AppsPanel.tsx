@@ -5,12 +5,14 @@
  * rendered on the right; mount them wherever there is room.
  */
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
-import { AppWindow, Cloud, Laptop, Play, Plus, Puzzle, RefreshCw, Square, Trash2 } from 'lucide-react';
+import { AppWindow, Cloud, Eye, EyeOff, Laptop, Play, Plus, Puzzle, RefreshCw, Square, Trash2 } from 'lucide-react';
 import { AddAppDialog } from '@/components/AddAppDialog';
 import { EntityIcon } from '@/components/EntityIcon';
 import { AppView } from '@/components/AppView';
 import type { AppRef } from '@/lib/pinnedApps';
+import { startPaneDrag } from './SplitView';
 import { PluginFrame } from '@/components/PluginFrame';
+import { PluginIcon } from '@/components/PluginIcon';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -23,7 +25,19 @@ import {
   type LocalServer,
   type ServerState,
 } from '@/lib/localMcp';
-import { listPlugins, setPluginEnabled, usePlugins, type Plugin } from '@/lib/plugins';
+import {
+  approvePluginServer,
+  listPlugins,
+  setPluginEnabled,
+  setPluginPlacement,
+  reviewPluginServer,
+  syncBackendContext,
+  usePlugins,
+  type PlacementMode,
+  type Plugin,
+  type ServerReview,
+} from '@/lib/plugins';
+import { pluginSection, useSidebarLayout } from '@/lib/sidebarLayout';
 import { cn } from '@/lib/utils';
 import { useAppStore } from '@/store';
 
@@ -57,6 +71,8 @@ interface ListItem {
   muted?: boolean;
   /** control shown at the row's right edge */
   trailing?: React.ReactNode;
+  /** glyph before the title */
+  icon?: React.ReactNode;
 }
 
 /** Shared two-pane shell: item list with a refresh button, content beside it. */
@@ -105,10 +121,13 @@ function ListPane({
                 <button
                   type="button"
                   onClick={() => onSelect(item.key)}
-                  className={cn('flex min-w-0 flex-1 cursor-pointer flex-col px-2.5 py-2 text-left', item.muted && 'opacity-50')}
+                  className={cn('flex min-w-0 flex-1 cursor-pointer items-start gap-2.5 px-2.5 py-2 text-left', item.muted && 'opacity-50')}
                 >
-                  <span className="truncate text-sm">{item.title}</span>
-                  {item.subtitle && <span className="truncate text-xs text-muted-foreground">{item.subtitle}</span>}
+                  {item.icon && <span className="mt-0.5 flex shrink-0">{item.icon}</span>}
+                  <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate text-sm">{item.title}</span>
+                    {item.subtitle && <span className="truncate text-xs text-muted-foreground">{item.subtitle}</span>}
+                  </span>
                 </button>
                 {item.trailing}
               </div>
@@ -124,6 +143,33 @@ function ListPane({
 const cloudKey = (a: McpApp) => `cloud:${a.instance_id}/${a.tool_name}`;
 const localKey = (a: LocalApp) => `local:${a.serverId}/${a.toolName}`;
 const serverKey = (id: string) => `server:${id}`;
+
+// An app as a self-contained reference: AppView opens it, the sidebar pins
+// it, and a split pane holds it.
+const localRef = (a: LocalApp): AppRef => ({
+  key: localKey(a),
+  kind: 'local',
+  title: a.title,
+  subtitle: a.serverName,
+  icons: a.icons,
+  seed: localKey(a),
+  toolName: a.toolName,
+  resourceUri: a.resourceUri,
+  requiresInput: a.requiresInput,
+  serverId: a.serverId,
+});
+const cloudRef = (a: McpApp, icons?: string[]): AppRef => ({
+  key: cloudKey(a),
+  kind: 'cloud',
+  title: a.title || a.tool_name,
+  subtitle: a.instance_name,
+  icons,
+  seed: a.instance_id,
+  toolName: a.tool_name,
+  resourceUri: a.resource_uri,
+  requiresInput: a.requires_input,
+  instanceId: a.instance_id,
+});
 
 
 // Installed servers start once per app run when the panel opens; one the user
@@ -172,26 +218,21 @@ function SectionHeader({ icon, title, action }: { icon: ReactNode; title: string
 }
 
 function AppRow({
-  title,
-  subtitle,
-  icons,
-  seed,
-  local,
+  app,
   selected,
   onSelect,
 }: {
-  title: string;
-  subtitle: string;
-  icons?: string[];
-  seed: string;
-  local: boolean;
+  app: AppRef;
   selected: boolean;
   onSelect: () => void;
 }) {
+  const { title, subtitle, icons, seed } = app;
   return (
     <button
       type="button"
       onClick={onSelect}
+      // Drag onto the main area to open it in a split.
+      onPointerDown={(e) => startPaneDrag(e, { kind: 'app', app })}
       className={cn(
         'flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left transition-colors hover:bg-accent',
         selected && 'bg-accent',
@@ -202,7 +243,7 @@ function AppRow({
         <span className="truncate text-sm">{title}</span>
         <span className="truncate text-xs text-muted-foreground">{subtitle}</span>
       </span>
-      <WhereBadge local={local} />
+      <WhereBadge local={app.kind === 'local'} />
     </button>
   );
 }
@@ -272,35 +313,8 @@ export function AppsPanel({ connected }: AppsPanelProps) {
   const cloudApp = cloudApps.find((a) => cloudKey(a) === selected) ?? null;
   const server = servers.find((s) => serverKey(s.id) === selected) ?? null;
 
-  // The selected app as a self-contained reference: AppView opens it, and the
-  // same object is what gets pinned to the sidebar.
-  const appRef: AppRef | null = localApp
-    ? {
-        key: localKey(localApp),
-        kind: 'local',
-        title: localApp.title,
-        subtitle: localApp.serverName,
-        icons: localApp.icons,
-        seed: localKey(localApp),
-        toolName: localApp.toolName,
-        resourceUri: localApp.resourceUri,
-        requiresInput: localApp.requiresInput,
-        serverId: localApp.serverId,
-      }
-    : cloudApp
-      ? {
-          key: cloudKey(cloudApp),
-          kind: 'cloud',
-          title: cloudApp.title || cloudApp.tool_name,
-          subtitle: cloudApp.instance_name,
-          icons: mcps.find((m) => m.id === cloudApp.instance_id)?.icons,
-          seed: cloudApp.instance_id,
-          toolName: cloudApp.tool_name,
-          resourceUri: cloudApp.resource_uri,
-          requiresInput: cloudApp.requires_input,
-          instanceId: cloudApp.instance_id,
-        }
-      : null;
+  const iconsOf = (a: McpApp) => mcps.find((m) => m.id === a.instance_id)?.icons;
+  const appRef: AppRef | null = localApp ? localRef(localApp) : cloudApp ? cloudRef(cloudApp, iconsOf(cloudApp)) : null;
 
   const refresh = () => {
     void useLocalMcp.getState().reload();
@@ -361,11 +375,7 @@ export function AppsPanel({ connected }: AppsPanelProps) {
                   {apps.map((a) => (
                     <AppRow
                       key={localKey(a)}
-                      title={a.title}
-                      subtitle={a.serverName}
-                      icons={a.icons}
-                      seed={localKey(a)}
-                      local
+                      app={localRef(a)}
                       selected={selected === localKey(a)}
                       onSelect={() => setSelected(localKey(a))}
                     />
@@ -389,11 +399,7 @@ export function AppsPanel({ connected }: AppsPanelProps) {
               cloudApps.map((a) => (
                 <AppRow
                   key={cloudKey(a)}
-                  title={a.title || a.tool_name}
-                  subtitle={a.instance_name}
-                  icons={mcps.find((m) => m.id === a.instance_id)?.icons}
-                  seed={a.instance_id}
-                  local={false}
+                  app={cloudRef(a, iconsOf(a))}
                   selected={selected === cloudKey(a)}
                   onSelect={() => setSelected(cloudKey(a))}
                 />
@@ -547,6 +553,7 @@ function ServerDetail({ server, onStopped, onRemoved }: { server: LocalServer; o
  */
 export function PluginsPanel() {
   const plugins = usePlugins((s) => s.plugins);
+  const hidden = useSidebarLayout((s) => s.hidden);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -557,6 +564,8 @@ export function PluginsPanel() {
     setError(null);
     try {
       await usePlugins.setState({ plugins: await listPlugins() });
+      // Backends: re-read the workspace's MCP instances too.
+      void syncBackendContext();
     } catch (e) {
       setError(errorText(e));
     } finally {
@@ -587,8 +596,14 @@ export function PluginsPanel() {
         key: p.id,
         title: p.title,
         subtitle: p.description,
+        icon: <PluginIcon plugin={p} className="size-[15px] text-muted-foreground" />,
         muted: !p.enabled,
-        trailing: <Toggle on={p.enabled} label={`${p.enabled ? 'Disable' : 'Enable'} ${p.title}`} onChange={() => void toggle(p)} />,
+        trailing: (
+          <>
+            {p.enabled && <SidebarToggle shown={!hidden.includes(pluginSection(p.id))} id={pluginSection(p.id)} title={p.title} />}
+            <Toggle on={p.enabled} label={`${p.enabled ? 'Disable' : 'Enable'} ${p.title}`} onChange={() => void toggle(p)} />
+          </>
+        ),
       }))}
       selected={current}
       onSelect={setSelected}
@@ -603,11 +618,177 @@ export function PluginsPanel() {
       ) : plugin && !plugin.enabled ? (
         <Note title={`${plugin.title} is off`}>Switch it on in the list to open it.</Note>
       ) : plugin ? (
-        <PluginFrame key={plugin.id} plugin={plugin} />
+        <>
+          {(plugin.server || plugin.serverApproved || plugin.staleApproval) && <BackendBar plugin={plugin} onError={setError} />}
+          {plugin.serverError && (
+            <div className="border-b border-border px-4 py-2 text-xs text-destructive">Backend not loaded: {plugin.serverError}</div>
+          )}
+          <PluginFrame key={plugin.id} plugin={plugin} />
+        </>
       ) : (
         <Note title="No plugin selected">Plugins are small local web pages that can read and message your threads.</Note>
       )}
     </ListPane>
+  );
+}
+
+const PLACEMENTS: { mode: PlacementMode; label: string }[] = [
+  { mode: 'auto', label: 'Auto' },
+  { mode: 'local', label: 'Local' },
+  { mode: 'cloud', label: 'Cloud' },
+];
+
+/**
+ * A plugin's MCP backend: where it should run (Auto prefers the workspace's
+ * instance, then this device), where it runs now and why not, and the user's
+ * approval. Nothing runs or is used before the user reviews exactly what the
+ * backend is (command, folder, env values, cloud instance) and allows that.
+ */
+function BackendBar({ plugin, onError }: { plugin: Plugin; onError: (e: string) => void }) {
+  const status = usePlugins((s) => s.backends[plugin.id]);
+  const [review, setReview] = useState<ServerReview | null>(null);
+  const mode = plugin.placement ?? 'auto';
+  const local = plugin.server?.local ?? null;
+  const cloud = plugin.server?.cloud ?? null;
+  const run = (f: () => Promise<void>) => void f().catch((e) => onError(errorText(e)));
+  useEffect(() => setReview(null), [plugin.id]);
+  return (
+    <div className="border-b border-border px-4 py-2 text-xs">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <span className="font-medium">Backend</span>
+        <div role="radiogroup" aria-label="Where the backend runs" className="flex rounded-md border border-border p-0.5">
+          {PLACEMENTS.map((p) => (
+            <button
+              key={p.mode}
+              type="button"
+              role="radio"
+              aria-checked={mode === p.mode}
+              disabled={(p.mode === 'local' && !local) || (p.mode === 'cloud' && !cloud)}
+              onClick={() => run(() => setPluginPlacement(plugin.id, p.mode))}
+              className={cn(
+                'rounded px-2 py-0.5 transition-colors disabled:opacity-40',
+                mode === p.mode ? 'bg-foreground text-background' : 'hover:bg-accent',
+              )}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        {status && (
+          <Badge variant={status.resolved === 'unavailable' ? 'destructive' : 'secondary'} className="gap-1">
+            {status.resolved === 'cloud' ? <Cloud className="size-3" /> : status.resolved === 'local' ? <Laptop className="size-3" /> : null}
+            {status.resolved === 'cloud' ? 'Runs in the workspace' : status.resolved === 'local' ? 'Runs on this device' : 'Unavailable'}
+          </Badge>
+        )}
+        {status?.reason && <span className="min-w-0 flex-1 truncate text-muted-foreground" title={status.reason}>{status.reason}</span>}
+        {status?.notice && <span className="min-w-0 flex-1 truncate text-foreground" title={status.notice}>{status.notice}</span>}
+        {plugin.updateAvailable && <span className="text-foreground">Update available</span>}
+        <span className="ml-auto flex items-center gap-2">
+          {(!plugin.serverApproved || plugin.updateAvailable || status?.notice) && (
+            <Button size="xs" onClick={() => run(async () => setReview(await reviewPluginServer(plugin.id)))}>
+              {plugin.updateAvailable ? 'Review update…' : plugin.serverApproved ? 'Review…' : 'Review and allow…'}
+            </Button>
+          )}
+          {(plugin.serverApproved || plugin.staleApproval) && (
+            <Button size="xs" variant="ghost" onClick={() => run(() => approvePluginServer(plugin.id, false))} title="Stop allowing this backend">
+              Revoke
+            </Button>
+          )}
+        </span>
+      </div>
+      {review && (
+        <div className="mt-2 flex flex-col gap-1.5 rounded-lg border border-border bg-muted/40 p-3">
+          <p className="text-muted-foreground">
+            Allowing runs exactly this version: a read-only copy of the plugin folder as shown here. Later changes to the folder
+            don't run until you review and allow them.
+          </p>
+          {review.command && (
+            <>
+              <span className="font-medium">Runs on this device, as you, without a sandbox</span>
+              <code className="whitespace-pre-wrap break-all rounded bg-background px-2 py-1">{review.command.join(' ')}</code>
+              <span>
+                program: <code className="break-all">{review.executable}</code>
+              </span>
+              <span>
+                from a copy of <code className="break-all">{review.cwd}</code> ({review.files} files, {formatBytes(review.bytes)})
+              </span>
+              {Object.keys(review.env).length > 0 && (
+                <>
+                  <span>with environment:</span>
+                  <code className="whitespace-pre-wrap break-all rounded bg-background px-2 py-1">
+                    {Object.entries(review.env)
+                      .map(([k, v]) => `${k}=${v}`)
+                      .join('\n')}
+                  </code>
+                </>
+              )}
+              {review.warnings.map((w) => (
+                <span key={w} className="text-destructive">
+                  {w}
+                </span>
+              ))}
+            </>
+          )}
+          {review.cloud &&
+            (review.cloud.instanceId ? (
+              <span>
+                Uses workspace instance <code>{review.cloud.instance}</code> (id <code>{review.cloud.instanceId}</code> in{' '}
+                {review.cloud.workspace}) with your AgentArea sign-in.
+              </span>
+            ) : (
+              <span className="text-muted-foreground">
+                Declares workspace instance <code>{review.cloud.instance}</code>; none in this workspace now (each one is reviewed
+                when it appears).
+              </span>
+            ))}
+          {review.problem && <span className="text-destructive">Can't be allowed: {review.problem}</span>}
+          <div className="mt-1 flex gap-2">
+            <Button
+              size="xs"
+              disabled={review.approved || !!review.problem}
+              onClick={() =>
+                run(async () => {
+                  try {
+                    await approvePluginServer(plugin.id, true, review);
+                  } finally {
+                    setReview(null);
+                  }
+                })
+              }
+            >
+              {review.approved ? 'Already allowed' : 'Allow'}
+            </Button>
+            <Button size="xs" variant="ghost" onClick={() => setReview(null)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatBytes(n: number): string {
+  return n < 1024 ? `${n} B` : n < 1 << 20 ? `${(n / 1024).toFixed(0)} KB` : `${(n / (1 << 20)).toFixed(1)} MB`;
+}
+
+/** Show or hide an enabled plugin's entry in the sidebar. */
+function SidebarToggle({ id, title, shown }: { id: string; title: string; shown: boolean }) {
+  const label = shown ? `Hide ${title} from sidebar` : `Show ${title} in sidebar`;
+  return (
+    <button
+      type="button"
+      aria-pressed={shown}
+      aria-label={label}
+      title={label}
+      onClick={() => useSidebarLayout.getState().setHidden(id, shown)}
+      className={cn(
+        'shrink-0 rounded p-0.5 transition-colors hover:bg-foreground/10 hover:text-foreground',
+        shown ? 'text-muted-foreground/60' : 'text-foreground',
+      )}
+    >
+      {shown ? <Eye className="size-3.5" /> : <EyeOff className="size-3.5" />}
+    </button>
   );
 }
 
