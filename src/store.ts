@@ -47,6 +47,18 @@ import { loadCodexModels, type ModelOption } from './lib/models';
 import type { CatalogItem, Message, Runner, Session } from './data';
 
 
+/** An ID token's payload, decoded but not verified: it came straight from the token endpoint over TLS. */
+function idTokenClaims(idToken: string | undefined): { email?: string; name?: string; sub?: string } {
+  const payload = idToken?.split('.')[1];
+  if (!payload) return {};
+  try {
+    const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'));
+    return JSON.parse(new TextDecoder().decode(Uint8Array.from(json, (c) => c.charCodeAt(0))));
+  } catch {
+    return {};
+  }
+}
+
 const WITHOUT_SIGN_IN_KEY = 'aa.withoutSignIn';
 
 function withoutSignIn(): boolean {
@@ -81,7 +93,7 @@ interface AppState {
   setEnv: (apiBaseUrl: string) => void;
 
   // Auth
-  auth: { status: AuthStatus; user: { email: string } | null; error: string | null };
+  auth: { status: AuthStatus; user: { email: string; name?: string } | null; error: string | null };
   login: () => Promise<void>;
   logout: () => void;
   continueWithoutSignIn: () => void;
@@ -292,7 +304,7 @@ export const useAppStore = create<AppState>((set, get) => {
       set({ auth: { status: 'unauthenticated', user: null, error: null } });
       return;
     }
-    set({ auth: { status: 'authenticated', user: { email: saved.email }, error: null } });
+    set({ auth: { status: 'authenticated', user: { email: saved.email, name: saved.name }, error: null } });
     void get().connect();
   };
   onSessionExpired(() =>
@@ -393,19 +405,20 @@ export const useAppStore = create<AppState>((set, get) => {
           expires_in?: number;
         };
 
-        let email = 'signed in';
-        try {
-          if (!as.userinfo_endpoint) throw new Error('no userinfo endpoint');
-          const ui = await fetch(as.userinfo_endpoint, {
-            headers: { Authorization: `Bearer ${tok.access_token}` },
-          });
-          if (ui.ok) {
-            const claims = (await ui.json()) as { email?: string; sub?: string };
-            email = claims.email || claims.sub || email;
+        // OIDC claims (email and profile scopes): the ID token has them, userinfo as a fallback.
+        let claims: { email?: string; name?: string; sub?: string } = idTokenClaims(tok.id_token);
+        if (!claims.email && as.userinfo_endpoint) {
+          try {
+            const ui = await fetch(as.userinfo_endpoint, {
+              headers: { Authorization: `Bearer ${tok.access_token}` },
+            });
+            if (ui.ok) claims = { ...claims, ...((await ui.json()) as typeof claims) };
+          } catch (e) {
+            console.warn('userinfo failed:', e);
           }
-        } catch {
-          /* best-effort */
         }
+        const email = claims.email || claims.sub || 'signed in';
+        const name = claims.name || undefined;
 
         await setSession({
           accessToken: tok.access_token,
@@ -415,8 +428,9 @@ export const useAppStore = create<AppState>((set, get) => {
           clientId,
           tokenEndpoint: as.token_endpoint,
           email,
+          name,
         });
-        set({ auth: { status: 'authenticated', user: { email }, error: null } });
+        set({ auth: { status: 'authenticated', user: { email, name }, error: null } });
         void get().connect();
       } catch (e) {
         set({

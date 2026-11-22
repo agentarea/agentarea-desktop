@@ -19,7 +19,9 @@ export interface Session extends Tokens {
   /** OAuth client the tokens were issued to (needed to refresh) */
   clientId: string;
   tokenEndpoint: string;
+  /** The user's email, or their id when the server sent no email claim. */
   email: string;
+  name?: string;
 }
 
 let current: Session | null = null;

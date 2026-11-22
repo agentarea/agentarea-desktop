@@ -80,7 +80,7 @@ export const config = {
   },
   /** Redirect captured by the desktop's loopback listener */
   redirectUri: 'http://127.0.0.1:14321/callback',
-  scopes: ['openid', 'offline', 'offline_access'],
+  scopes: ['openid', 'offline', 'offline_access', 'email', 'profile'],
 };
 
 /** Fixed loopback port — must match the port in `redirectUri` and the Rust server. */

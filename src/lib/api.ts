@@ -64,12 +64,19 @@ export interface Workspace {
   id: string;
   slug: string;
   name: string;
+  /** Presigned, lives an hour; refetched with the list on every connect. */
+  logoUrl: string | null;
 }
 
 /** GET /v1/workspaces — every workspace (org) the user belongs to. */
 export async function listWorkspaces(): Promise<Workspace[]> {
   const raw: any[] = await (await apiFetch('/v1/workspaces')).json();
-  const list = raw.map((w) => ({ id: String(w.id), slug: String(w.slug ?? w.id), name: String(w.name ?? w.slug ?? w.id) }));
+  const list = raw.map((w) => ({
+    id: String(w.id),
+    slug: String(w.slug ?? w.id),
+    name: String(w.name ?? w.slug ?? w.id),
+    logoUrl: typeof w.logo_url === 'string' && w.logo_url ? w.logo_url : null,
+  }));
   for (const w of list) slugs.set(w.id, w.slug);
   return list;
 }

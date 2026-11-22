@@ -11,7 +11,8 @@ export interface AuthServer {
   userinfo_endpoint?: string;
 }
 
-const clientKey = () => `aa.oauthClient:${config.apiBaseUrl}`;
+// Keyed by the scopes too: a client registered for fewer scopes can't ask for more.
+const clientKey = () => `aa.oauthClient:${config.apiBaseUrl}:${config.scopes.join(' ')}`;
 
 async function http() {
   return (await import('@tauri-apps/plugin-http')).fetch;
