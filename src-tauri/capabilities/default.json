@@ -17,6 +17,8 @@
       ]
     },
     "dialog:default",
+    "updater:default",
+    "process:allow-restart",
     {
       "identifier": "http:default",
       "allow": [

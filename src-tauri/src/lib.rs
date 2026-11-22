@@ -756,6 +756,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(local_mcp::LocalMcp::default())
         // The vault's MCP server lives as long as the app; without it agents
         // just don't get secret tools.
