@@ -16,8 +16,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # One build per Mac architecture: the updater fetches only its own.
           - platform: macos-latest
-            args: --target universal-apple-darwin
+            args: --target aarch64-apple-darwin
+            rust_target: aarch64-apple-darwin
+          - platform: macos-latest
+            args: --target x86_64-apple-darwin
+            rust_target: x86_64-apple-darwin
           - platform: ubuntu-22.04
             args: ''
           - platform: windows-latest
@@ -41,10 +46,11 @@ jobs:
           cache: pnpm
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+          targets: ${{ matrix.rust_target || '' }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          key: ${{ matrix.rust_target }}
 
       - run: pnpm install --frozen-lockfile
 
@@ -82,7 +88,7 @@ jobs:
             Download the installer for your platform below. Installed apps
             offer this update on their next launch.
 
-            - **macOS** (Apple Silicon and Intel): `.dmg`
+            - **macOS**: `_aarch64.dmg` for Apple Silicon (M1 and later), `_x64.dmg` for Intel
             - **Windows**: `.msi` or `-setup.exe`
             - **Linux**: `.AppImage`, `.deb` or `.rpm`
           generateReleaseNotes: true
