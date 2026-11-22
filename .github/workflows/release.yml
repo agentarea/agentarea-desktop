@@ -77,7 +77,7 @@ jobs:
         with:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
           releaseName: AgentArea Desktop v__VERSION__
-          includeUpdaterJson: true
+          uploadUpdaterJson: true
           releaseBody: |
             Download the installer for your platform below. Installed apps
             offer this update on their next launch.
