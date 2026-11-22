@@ -104,7 +104,7 @@ export interface Plugin {
 }
 
 /**
- * Plugin list shared by the Plugins panel and the sidebar, plus navigation: a
+ * Plugin list shared by the Apps screen and the sidebar, plus navigation: a
  * plugin's sidebar can ask to open its main page (with a #hash) in the panel.
  */
 interface PluginUi {
@@ -113,7 +113,7 @@ interface PluginUi {
   /** backend placements for the active workspace, by plugin id */
   backends: Record<string, BackendStatus>;
   reloadBackends: () => Promise<void>;
-  /** set by `ui.open`; the Plugins panel selects it and App switches to it */
+  /** set by `ui.open`; App switches to it */
   target: { id: string; hash: string; at: number } | null;
   open: (id: string, hash: string) => void;
 }
@@ -340,7 +340,7 @@ export async function runBridgeMethod(pluginId: string, method: string, params: 
 
     case 'fs.pickRoot': {
       const { open } = await import('@tauri-apps/plugin-dialog');
-      const dir = await open({ directory: true, multiple: false, title: 'Folder for this plugin' });
+      const dir = await open({ directory: true, multiple: false, title: 'Folder for this app' });
       if (typeof dir !== 'string') return { path: null };
       await invoke('plugin_set_root', { id: pluginId, path: dir });
       await usePlugins.getState().reload();

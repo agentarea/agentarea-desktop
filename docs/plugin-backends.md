@@ -271,11 +271,13 @@ sandboxed, with an opaque origin, so only the app's own UI can invoke them.
 
 ## UI
 
-The Apps → Plugins panel shows a bar above each plugin that has a server (or
-an approval):
+The app's details page (Apps → the app's card → Details) has a Backend
+section for each plugin that has a server (or an approval). A plugin whose
+backend waits for review shows under "Needs review" on the Apps screen, and
+counts toward the sidebar Apps entry's badge. The section has:
 
-- An Auto / Local / Cloud selector. Local or Cloud is disabled when the
-  manifest doesn't declare it.
+- An Auto / This device / Workspace selector. This device or Workspace is
+  disabled when the manifest doesn't declare it.
 - The resolved placement badge ("Runs on this device", "Runs in the
   workspace", "Unavailable"), plus the reason.
 - **Review and allow…** (or **Review update…** when the folder changed, or

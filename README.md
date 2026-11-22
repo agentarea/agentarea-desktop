@@ -61,9 +61,9 @@ A thread keeps its runner once the first message is sent (the next turn resumes
 that runner's own session). Threads live in `localStorage` for now.
 
 **Views.** One pane, or up to four split like Claude desktop: drag a thread,
-a pinned app, an app from the Apps panel or a plugin's sidebar entry onto the
-main area and drop it on a side of a pane (a plain click still opens it
-full-page). Panes hold threads, MCP apps and plugin pages side by side; drag a
+an app's sidebar entry or an app card from the Apps screen onto the main area
+and drop it on a side of a pane (a plain click still opens it full-page).
+Panes hold threads and apps side by side; drag a
 pane's header to move it, drag a divider to resize (double-click resets).
 ⌘1–⌘4 focuses a pane, ⌘[ / ⌘] steps between panes, ⌘Enter zooms one, ⌘W
 closes it, ⌘\\ splits with a new thread, ⌘T opens a new thread, ⌃1–⌃9
@@ -71,7 +71,7 @@ switches workspace. **Groups:** with two or more panes open, "Save group" (⌘S)
 names the split; it appears under Groups in the sidebar and a click restores
 it exactly (contents and sizes). While a group is open, layout changes save to
 it; "Close group" goes back to one pane. Groups are kept per workspace in
-`localStorage`, and a pane whose thread, app or plugin is gone shows a
+`localStorage`, and a pane whose thread or app is gone shows a
 placeholder with Remove.
 Each local thread works in a folder: a picked one, or its own `~/AgentArea/<id>`;
 files dropped on a thread are copied there (or read in place when a folder is
@@ -80,27 +80,40 @@ the file (⌘-click reveals it in Finder); file edits show as "Created / Edited
 file +N −M" rows with an inline diff; other tool calls expand to show input and
 result.
 
-**Apps.** MCP Apps in two explicit sections, both rendered like the web app's
-Apps page (`AppBridge` in a sandbox served from the `aa-sandbox://` scheme, a
-separate origin from the main window):
+**Apps.** Anything with a UI is an app, whatever it is built from. The sidebar
+only launches them: one **Apps** entry (with a count when something needs
+review) and an entry per app shown in the sidebar; a click opens the app
+full-width or, dragged, in a pane. The **Apps** screen is the catalog: a card
+per app with its source ("This device" or "Workspace"), an on/off switch where
+the app can be turned off, "Show in sidebar" and Open, filtered by All / This
+device / Workspace. Backends waiting for review and servers that failed sit in
+a "Needs review" group on top. Each app has a details page (permissions,
+backend and its Review and allow flow, errors, the server it runs on, remove /
+turn off). An app comes from one of three places:
 
-- **On this device** — MCP servers the desktop runs itself as stdio children
-  (`src-tauri/src/local_mcp.rs`); no sign-in needed. What is installed is data in
-  `~/AgentArea/mcp/servers.json` (seeded with two examples: system monitor and
-  budget allocator). Installed servers start when the panel opens; tools whose
-  `_meta.ui.resourceUri` is a `ui://` resource are apps, other servers show
-  "No UI". **Add app** installs from a bundled Recommended list, the public MCP
+- **MCP servers on this device**, run as stdio children
+  (`src-tauri/src/local_mcp.rs`); no sign-in needed. What is installed is data
+  in `~/AgentArea/mcp/servers.json` (seeded with two examples: system monitor
+  and budget allocator). Installed servers start when the Apps screen opens;
+  tools whose `_meta.ui.resourceUri` is a `ui://` resource are apps. Servers
+  with no such tool are not apps: they are listed apart under "Tools for
+  agents". **Add app** installs from a bundled Recommended list, the public MCP
   registry (npm → `npx -y`, PyPI → `uvx`; remote-only servers aren't
   installable yet), your own `/v0/servers` registry, or a manual command.
-- **AgentArea · workspace** — the workspace's apps (`/v1/mcp-apps/`); shown
-  once connected.
+- **The AgentArea workspace** — its MCP Apps (`/v1/mcp-apps/`), shown once
+  connected.
+- **A folder in `~/AgentArea/plugins/`** — see below.
 
-**Plugins.** Folders in `~/AgentArea/plugins/<id>/` with `plugin.json` + an HTML
-entry, served from `aa-plugin://` into a sandboxed iframe. A postMessage bridge
-gives them `threads.list` / `threads.send` / `threads.create`. An agent can write
-one; an example `threads-board` is seeded on first use. Plugins can be turned
-off (state in `~/AgentArea/plugins-state.json`); a disabled plugin is not
-served at all. Apps can be pinned to the sidebar.
+MCP Apps render like the web app's Apps page (`AppBridge` in a sandbox served
+from the `aa-sandbox://` scheme, a separate origin from the main window).
+
+**Building an app (`plugin.json`).** A folder `~/AgentArea/plugins/<id>/` with
+`plugin.json` + an HTML entry, served from `aa-plugin://` into a sandboxed
+iframe. A postMessage bridge gives it `threads.list` / `threads.send` /
+`threads.create`. An agent can write one; an example `threads-board` is seeded
+on first use. It can be turned off (state in `~/AgentArea/plugins-state.json`);
+a turned-off app is not served at all. An optional `sidebar` page shows inline
+under its sidebar entry. Remove it by deleting its folder.
 
 **Secrets.** A vault for API keys that local agents can *use* without *seeing*
 (`src-tauri/src/vault.rs`, `secrets_mcp.rs`, UI in `SecretsView`). Values live in

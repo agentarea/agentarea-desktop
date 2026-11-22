@@ -1,6 +1,6 @@
 /**
  * MCP Apps pinned to the sidebar for one-click use. Each pin carries what is
- * needed to open the app without the Apps panel: where it runs (a local server
+ * needed to open the app without the Apps screen: where it runs (a local server
  * or an AgentArea instance), its entry tool and its `ui://` resource.
  */
 import { create } from 'zustand';
@@ -39,9 +39,9 @@ interface PinnedApps {
   pinned: AppRef[];
   toggle: (app: AppRef) => void;
   unpin: (key: string) => void;
-  /** the pinned app to show full-width (App switches to it) */
-  opened: { key: string; at: number } | null;
-  open: (key: string) => void;
+  /** the app to show full-width (App switches to it); `app` when opened from the Apps screen, pinned or not */
+  opened: { key: string; at: number; app?: AppRef } | null;
+  open: (key: string, app?: AppRef) => void;
 }
 
 export const usePinnedApps = create<PinnedApps>((set, get) => {
@@ -61,6 +61,6 @@ export const usePinnedApps = create<PinnedApps>((set, get) => {
     },
     unpin: (key) => save(get().pinned.filter((p) => p.key !== key)),
     opened: null,
-    open: (key) => set({ opened: { key, at: Date.now() } }),
+    open: (key, app) => set({ opened: { key, at: Date.now(), app } }),
   };
 });

@@ -40,7 +40,7 @@ export const DRAG_THRESHOLD = 4;
 /** narrowest a pane gets when resizing, in pixels */
 const MIN_PANE = 220;
 
-/* ── Dragging a thread, app or plugin page (sidebar, Apps panel, pane header) onto the panes ───── */
+/* ── Dragging a thread, app or plugin page (sidebar, Apps screen, pane header) onto the panes ───── */
 
 /** Where an item dragged to (x, y) would land, if anywhere. */
 export function targetAt(item: PaneContent, x: number, y: number): DropTarget | null {
@@ -454,7 +454,7 @@ function AppPane({ leaf, app, full }: { leaf: Leaf; app: AppRef; full?: boolean 
 /** A plugin's main page in a pane. */
 function PluginPane({ leaf, id, full }: { leaf: Leaf; id: string; full?: boolean }) {
   const plugin = usePlugins((s) => s.plugins.find((p) => p.id === id));
-  if (!plugin?.enabled) return <Dangling leaf={leaf} text={plugin ? 'Plugin is turned off' : 'Plugin no longer installed'} />;
+  if (!plugin?.enabled) return <Dangling leaf={leaf} text={plugin ? 'App is turned off' : 'App no longer installed'} />;
   return (
     <>
       {!full && (
