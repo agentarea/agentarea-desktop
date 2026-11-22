@@ -23,25 +23,13 @@
       "identifier": "http:default",
       "allow": [
         {
-          "url": "http://localhost:4444/*"
+          "url": "https://*:*"
         },
         {
-          "url": "http://localhost:8000/*"
+          "url": "http://localhost:*"
         },
         {
-          "url": "http://127.0.0.1:4444/*"
-        },
-        {
-          "url": "http://127.0.0.1:8000/*"
-        },
-        {
-          "url": "https://api.agentarea.ru/*"
-        },
-        {
-          "url": "https://oauth.agentarea.ru/*"
-        },
-        {
-          "url": "https://registry.modelcontextprotocol.io/*"
+          "url": "http://127.0.0.1:*"
         }
       ]
     }

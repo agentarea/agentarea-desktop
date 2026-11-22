@@ -13,26 +13,62 @@ export interface Environment {
   apiBaseUrl: string;
 }
 
-export const ENVIRONMENTS: Environment[] = [
+/**
+ * Known AgentArea servers. Any other one, self-hosted included, is entered by
+ * URL: every server publishes its OAuth metadata, so nothing else is needed.
+ * A platform on localhost is offered only by `tauri dev`.
+ */
+export const SERVERS: Environment[] = [
+  { id: 'ai', label: 'agentarea.ai', apiBaseUrl: 'https://api.agentarea.ai' },
   { id: 'ru', label: 'agentarea.ru', apiBaseUrl: 'https://api.agentarea.ru' },
-  { id: 'local', label: 'Local', apiBaseUrl: 'http://localhost:8000' },
+  ...(import.meta.env.DEV ? [{ id: 'local', label: 'Local', apiBaseUrl: 'http://localhost:8000' }] : []),
 ];
 
-const ENV_KEY = 'aa.env';
+const SERVER_KEY = 'aa.server';
+/** Before servers were URLs: the id of a preset. */
+const LEGACY_ENV_KEY = 'aa.env';
+
+export function serverFor(apiBaseUrl: string): Environment {
+  const known = SERVERS.find((s) => s.apiBaseUrl === apiBaseUrl);
+  if (known) return known;
+  const host = new URL(apiBaseUrl).host;
+  return { id: host, label: host, apiBaseUrl };
+}
+
+/**
+ * What a user types ("example.com", "https://api.example.com/") as an API base
+ * URL, or null. Plain http only for this machine.
+ */
+export function parseServerUrl(input: string): string | null {
+  const text = input.trim();
+  if (!text) return null;
+  let url: URL;
+  try {
+    url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`);
+  } catch {
+    return null;
+  }
+  const local = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && local)) return null;
+  return url.origin;
+}
 
 export function currentEnv(): Environment {
-  let id: string | null = null;
   try {
-    id = localStorage.getItem(ENV_KEY);
+    const saved = localStorage.getItem(SERVER_KEY);
+    if (saved) return serverFor(saved);
+    const legacy = SERVERS.find((s) => s.id === localStorage.getItem(LEGACY_ENV_KEY));
+    if (legacy) return legacy;
   } catch {
     /* default below */
   }
-  return ENVIRONMENTS.find((e) => e.id === id) ?? ENVIRONMENTS[0];
+  return SERVERS[0];
 }
 
-export function saveEnv(id: string) {
+export function saveEnv(apiBaseUrl: string) {
   try {
-    localStorage.setItem(ENV_KEY, id);
+    localStorage.setItem(SERVER_KEY, apiBaseUrl);
+    localStorage.removeItem(LEGACY_ENV_KEY);
   } catch {
     /* best-effort */
   }
