@@ -555,7 +555,7 @@ export function ContextPanel({ session, className, onClose }: { session: Session
     }
   };
   const showFiles = tab === 'files' && !!tree;
-  // The tree moved here from the left sidebar: take it out of there once (Plugins panel brings it back).
+  // The tree moved here from the left sidebar: take it out of there once (the Apps screen brings it back).
   useEffect(() => {
     if (!tree) return;
     try {

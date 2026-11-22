@@ -7,7 +7,6 @@ import {
   X,
   SquarePen,
   AppWindow,
-  Puzzle,
   Inbox,
   KeyRound,
   LayoutGrid,
@@ -27,7 +26,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { LoginScreen } from '@/components/LoginScreen';
 import { UpdateBanner } from '@/components/UpdateBanner';
 import { DragLayer, SplitView, startPaneDrag, startThreadDrag, useContentTitle } from '@/components/SplitView';
-import { AppsPanel, PluginsPanel } from '@/components/AppsPanel';
+import { AppsPanel, useAppsAttention, useAppsScreen } from '@/components/AppsPanel';
 import { InboxView } from '@/components/InboxView';
 import { AppView } from '@/components/AppView';
 import { EntityIcon } from '@/components/EntityIcon';
@@ -36,6 +35,7 @@ import { SecretsView } from '@/components/SecretsView';
 import { localInbox } from '@/lib/inbox';
 import { PluginFrame } from '@/components/PluginFrame';
 import { usePlugins } from '@/lib/plugins';
+import { useLocalMcp } from '@/lib/localMcp';
 import { useDragDropTarget } from '@/components/DropZone';
 import { PluginEntry, SectionHeader, SectionOrder, SidebarDragLayer, SidebarSection } from '@/components/SidebarSections';
 import { fillOrder, isCollapsed, isPluginSection, pluginSection, useSidebarLayout } from '@/lib/sidebarLayout';
@@ -62,9 +62,15 @@ export default function App() {
 
 /* ── View: threads (one, or up to four split), a panel, or a plugin's own page ───── */
 
-/** 'plugin-page': a page a plugin opened (ui.open), full-width; not persisted. */
-type ViewMode = 'threads' | 'inbox' | 'apps' | 'plugins' | 'secrets' | 'plugin-page' | 'app-page';
+/** 'plugin-page' / 'app-page': one app full-width (a plugin's page, an MCP app); not persisted. */
+type ViewMode = 'threads' | 'inbox' | 'apps' | 'secrets' | 'plugin-page' | 'app-page';
 const VIEW_KEY = 'aa.view';
+// Plugins were their own view before they became apps.
+try {
+  if (localStorage.getItem(VIEW_KEY) === 'plugins') localStorage.setItem(VIEW_KEY, 'apps');
+} catch {
+  /* best-effort */
+}
 /** the left column (workspace rail + sidebar): 'open' or 'closed' (⌘B) */
 const NAV_KEY = 'aa.sidebar';
 const SIDEBAR_WIDTH = 260;
@@ -99,7 +105,7 @@ function Workspace() {
   const connected = useAppStore((s) => s.connection === 'connected');
   const select = useAppStore((s) => s.select);
   const newSession = useAppStore((s) => s.newSession);
-  const [view, setView] = usePersisted<ViewMode>(VIEW_KEY, ['threads', 'inbox', 'apps', 'plugins', 'secrets'], 'threads');
+  const [view, setView] = usePersisted<ViewMode>(VIEW_KEY, ['threads', 'inbox', 'apps', 'secrets'], 'threads');
   const tree = usePanes((s) => s.tree);
   const maximized = usePanes((s) => s.maximized);
   const paneList = leaves(tree);
@@ -160,23 +166,25 @@ function Workspace() {
     return () => clearInterval(t);
   }, [connected, loadInbox]);
 
-  // A pinned app clicked in the sidebar: show it full-width.
+  // An app opened from the sidebar or the Apps screen: show it full-width.
   const openedApp = usePinnedApps((s) => s.opened);
   const pinnedApps = usePinnedApps((s) => s.pinned);
-  const shownApp = openedApp ? pinnedApps.find((a) => a.key === openedApp.key) : undefined;
+  const shownApp = openedApp ? (pinnedApps.find((a) => a.key === openedApp.key) ?? openedApp.app) : undefined;
   useEffect(() => {
     if (openedApp) setView('app-page');
   }, [openedApp]);
 
-  // A plugin's sidebar opened its page (ui.open): show just that page, not
-  // the Plugins management panel.
+  // A plugin opened (sidebar entry, Apps screen, or its own ui.open): show
+  // just its page, not the Apps screen.
   const pluginTarget = usePlugins((s) => s.target);
   const targetPlugin = usePlugins((s) => s.plugins.find((p) => p.id === s.target?.id) ?? null);
   useEffect(() => {
     if (pluginTarget) setView('plugin-page');
   }, [pluginTarget]);
+  // Loaded up front for the sidebar: plugin entries, and the Apps entry's needs-review count.
   useEffect(() => {
     void usePlugins.getState().reload();
+    void useLocalMcp.getState().reload();
   }, []);
 
   // Focus the composer of the thread just opened.
@@ -199,7 +207,7 @@ function Workspace() {
     setView('threads');
   };
 
-  // Dragging from the Apps panel or a full-page app/plugin: show the panes to
+  // Dragging from the Apps screen or a full-page app: show the panes to
   // drop on, and go back if the drag is cancelled.
   const dragging = usePanes((s) => !!s.drag);
   const beforeDrag = useRef<{ view: ViewMode; tree: Node } | null>(null);
@@ -292,12 +300,10 @@ function Workspace() {
               ? 'Inbox'
               : view === 'apps'
               ? 'Apps'
-              : view === 'plugins'
-                ? 'Plugins'
-                : view === 'secrets'
-                  ? 'Secrets'
-                : view === 'plugin-page'
-                  ? targetPlugin?.title
+              : view === 'secrets'
+              ? 'Secrets'
+              : view === 'plugin-page'
+              ? targetPlugin?.title
                   : view !== 'threads' || !sole?.content
                   ? undefined
                   : sole.content.kind !== 'thread'
@@ -317,17 +323,16 @@ function Workspace() {
             <AppView key={shownApp.key} app={shownApp} />
           ) : (
             <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">
-              This app was unpinned. Open it from Apps.
+              This app is gone. Open it from Apps.
             </div>
           ))}
         {view === 'apps' && <AppsPanel connected={connected} />}
-        {view === 'plugins' && <PluginsPanel />}
         {view === 'secrets' && <SecretsView />}
         {view === 'plugin-page' &&
           (targetPlugin?.enabled && pluginTarget ? (
             <PluginFrame key={targetPlugin.id} plugin={targetPlugin} hash={pluginTarget.hash} />
           ) : (
-            <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">This plugin is off or gone.</div>
+            <div className="flex flex-1 items-center justify-center text-sm text-muted-foreground">This app is off or gone.</div>
           ))}
       </main>
       <DragLayer />
@@ -668,6 +673,7 @@ function Sidebar({
   const inThreads = view === 'threads';
   const cloudInbox = useAppStore((s) => s.cloudInbox);
   const approvals = useAppStore((s) => s.approvals);
+  const appsAttention = useAppsAttention();
   const inboxCount = useMemo(
     () => localInbox(sessions, running, approvals).length + cloudInbox.filter((i) => i.status !== 'completed').length,
     [sessions, running, approvals, cloudInbox],
@@ -716,8 +722,17 @@ function Sidebar({
           active={view === 'inbox'}
           onClick={() => onChangeView('inbox')}
         />
-        <SidebarNavItem icon={AppWindow} label="Apps" active={view === 'apps'} onClick={() => onChangeView('apps')} />
-        <SidebarNavItem icon={Puzzle} label="Plugins" active={view === 'plugins'} onClick={() => onChangeView('plugins')} />
+        <SidebarNavItem
+          icon={AppWindow}
+          label="Apps"
+          count={appsAttention}
+          attention
+          active={view === 'apps'}
+          onClick={() => {
+            useAppsScreen.getState().show(null);
+            onChangeView('apps');
+          }}
+        />
         <SidebarNavItem icon={KeyRound} label="Secrets" active={view === 'secrets'} onClick={() => onChangeView('secrets')} />
       </div>
 
@@ -900,7 +915,7 @@ function GroupsSection({ active, onOpen }: { active: boolean; onOpen: (id: strin
   );
 }
 
-/** Apps pinned from the Apps panel, one click away. */
+/** Apps pinned from the Apps screen, one click away. */
 function PinnedAppsSection({ active }: { active: boolean }) {
   const pinned = usePinnedApps((s) => s.pinned);
   const opened = usePinnedApps((s) => s.opened);
@@ -915,7 +930,7 @@ function PinnedAppsSection({ active }: { active: boolean }) {
         pinned.map((a) => (
           <div
             key={a.key}
-            onClick={() => open(a.key)}
+            onClick={() => open(a.key, a)}
             // Drag onto the main area to open it in a split.
             onPointerDown={(e) => startPaneDrag(e, { kind: 'app', app: a })}
             title={`${a.title} — ${a.kind === 'local' ? 'on this device' : 'AgentArea'} · ${a.subtitle}`}
@@ -949,6 +964,7 @@ function SidebarNavItem({
   icon: Icon,
   label,
   count,
+  attention,
   active,
   onClick,
 }: {
@@ -956,6 +972,8 @@ function SidebarNavItem({
   label: string;
   /** badge, e.g. items waiting in the inbox */
   count?: number;
+  /** the badge means something needs review, not unread items */
+  attention?: boolean;
   active: boolean;
   onClick: () => void;
 }) {
@@ -969,9 +987,17 @@ function SidebarNavItem({
     >
       <Icon className="size-[15px] text-muted-foreground" />
       {label}
-      {!!count && (
-        <span className="ml-auto rounded-full bg-foreground px-1.5 text-[10.5px] font-semibold text-background">{count}</span>
-      )}
+      {!!count &&
+        (attention ? (
+          <span
+            title={`${count} need${count === 1 ? 's' : ''} review`}
+            className="ml-auto rounded-full bg-amber-500/15 px-1.5 text-[10.5px] font-medium text-amber-700 dark:text-amber-500"
+          >
+            {count}
+          </span>
+        ) : (
+          <span className="ml-auto rounded-full bg-foreground px-1.5 text-[10.5px] font-semibold text-background">{count}</span>
+        ))}
     </button>
   );
 }

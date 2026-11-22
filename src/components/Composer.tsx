@@ -325,7 +325,7 @@ export function DataChip({ session }: { session: Session }) {
         )}
         <DropdownMenuSeparator />
         <div className="px-2 py-1.5 text-[11px] text-muted-foreground">
-          The agent sees these on every turn. Plugin folders are read-only.
+          The agent sees these on every turn. App folders are read-only.
         </div>
       </DropdownMenuContent>
     </DropdownMenu>

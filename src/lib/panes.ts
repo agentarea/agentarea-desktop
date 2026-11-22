@@ -15,7 +15,7 @@ import type { AppRef } from './pinnedApps';
 export const MAX_PANES = 4;
 
 export type Zone = 'left' | 'right' | 'top' | 'bottom' | 'center';
-/** What a pane shows. Apps carry their whole ref, so a pane opens them without the Apps panel. */
+/** What a pane shows. Apps carry their whole ref, so a pane opens them without the Apps screen. */
 export type PaneContent = { kind: 'thread'; id: string } | { kind: 'app'; app: AppRef } | { kind: 'plugin'; id: string };
 export interface Leaf {
   kind: 'leaf';

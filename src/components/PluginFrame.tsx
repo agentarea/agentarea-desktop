@@ -49,7 +49,7 @@ export function PluginFrame({ plugin, page, hash, className }: PluginFrameProps)
   if (!src) {
     return (
       <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted-foreground">
-        Plugins need the desktop app runtime.
+        This app runs only in the desktop app.
       </div>
     );
   }

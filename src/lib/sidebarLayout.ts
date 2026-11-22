@@ -83,7 +83,7 @@ interface SidebarLayout {
   /** every section id ever placed, including ones not shown right now */
   order: string[];
   collapsed: Record<string, boolean>;
-  /** plugin sections taken out of the sidebar (shown again from the Plugins panel) */
+  /** plugin sections taken out of the sidebar (shown again from the Apps screen) */
   hidden: string[];
   heights: Record<string, number>;
   drag: SidebarDrag | null;
