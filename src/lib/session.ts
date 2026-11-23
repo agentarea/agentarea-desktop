@@ -88,6 +88,8 @@ export async function restoreSession(): Promise<Session | null> {
   } catch {
     current = null;
   }
+  // A session from a dynamically registered client carries no grant the API accepts.
+  if (current && current.clientId !== config.clientId) current = null;
   shareToken();
   scheduleRenewal();
   if (failure !== null) throw new KeychainError(String(failure));
