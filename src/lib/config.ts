@@ -80,7 +80,9 @@ export const config = {
   },
   /** Redirect captured by the desktop's loopback listener */
   redirectUri: 'http://127.0.0.1:14321/callback',
-  scopes: ['openid', 'offline', 'offline_access', 'email', 'profile'],
+  /** The platform registers this client itself; only it and the CLI are granted `api`. */
+  clientId: 'agentarea-desktop',
+  scopes: ['api', 'openid', 'offline', 'offline_access', 'email', 'profile'],
 };
 
 /** Fixed loopback port — must match the port in `redirectUri` and the Rust server. */

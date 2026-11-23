@@ -5,7 +5,7 @@
  */
 import { create } from 'zustand';
 import { config, LOOPBACK_PORT, currentEnv, saveEnv, type Environment } from './lib/config';
-import { discover, ensureClient, forgetClient } from './lib/oauth';
+import { discover } from './lib/oauth';
 import {
   setSession,
   restoreSession,
@@ -360,21 +360,13 @@ export const useAppStore = create<AppState>((set, get) => {
         const { fetch } = await import('@tauri-apps/plugin-http');
 
         const as = await discover();
-        const clientId = await ensureClient(as);
+        const clientId = config.clientId;
 
         // Start the loopback listener, then send the browser to sign in.
         const redirectPromise = invoke<string>('await_oauth_redirect', { port: LOOPBACK_PORT });
         await openUrl(buildAuthorizeUrl({ endpoint: as.authorization_endpoint, clientId, challenge, state }));
 
-        let query: string;
-        try {
-          query = await redirectPromise;
-        } catch (e) {
-          // No redirect back usually means the auth server rejected the client
-          // (e.g. it was reset); register a fresh one on the next attempt.
-          forgetClient();
-          throw e;
-        }
+        const query = await redirectPromise;
         const params = new URLSearchParams(query);
         if (params.get('error'))
           throw new Error(params.get('error_description') || params.get('error')!);
@@ -394,10 +386,7 @@ export const useAppStore = create<AppState>((set, get) => {
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: body.toString(),
         });
-        if (!tokenRes.ok) {
-          if (tokenRes.status === 401) forgetClient();
-          throw new Error(`token exchange failed (${tokenRes.status})`);
-        }
+        if (!tokenRes.ok) throw new Error(`token exchange failed (${tokenRes.status})`);
         const tok = (await tokenRes.json()) as {
           access_token: string;
           refresh_token?: string;
